@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# API Keys & Sensitive Configs (보안 필수)
+bitget_keys.py
+telegram_alert.py
+공통모듈/bitget_keys.py
+공통모듈/telegram_alert.py
+telegram_alert_배포.py
+*.env
+
+# Trading Records & Excel Files (개인 자산/거래 데이터 보호)
+*.xlsx
+*.xls
+*.csv
+
+# Lock Files & Logs
+*.lock
+*.log
+
+# OS & Editor
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
