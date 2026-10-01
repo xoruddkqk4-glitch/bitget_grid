@@ -1961,15 +1961,20 @@ def _kst_now():
     return datetime.now(KST)
 
 
-def _정산_집계(file_path: str, start_dt: datetime, end_dt: datetime) -> dict:
-    """[start_dt, end_dt) 구간 거래 집계. 매수=매수날짜, 매도=매도날짜 기준."""
-    df = pd.read_excel(file_path, engine="openpyxl", sheet_name=0)
-    if df.empty:
-        return None
+def _정산_데이터_집계(df: pd.DataFrame, start_dt: datetime, end_dt: datetime) -> dict:
+    """[start_dt, end_dt) 구간 거래 집계 (메모리 DataFrame 대상)."""
+    empty_res = {
+        "매수건수": 0, "매수수량": 0.0, "매수금액": 0.0,
+        "매도건수": 0, "매도수량": 0.0, "매도금액": 0.0,
+        "수수료": 0.0, "실현수익": 0.0,
+    }
+    if df is None or df.empty:
+        return empty_res
 
     b = pd.to_datetime(df.get("매수날짜"), errors="coerce")
     s = pd.to_datetime(df.get("매도날짜"), errors="coerce")
-    cs, ce = start_dt.replace(tzinfo=None), end_dt.replace(tzinfo=None)
+    cs = start_dt.replace(tzinfo=None) if start_dt else datetime.min
+    ce = end_dt.replace(tzinfo=None) if end_dt else datetime.max
 
     buy_df = df[b.notna() & (b >= cs) & (b < ce)]
     sell_df = df[s.notna() & (s >= cs) & (s < ce)]
@@ -1984,6 +1989,17 @@ def _정산_집계(file_path: str, start_dt: datetime, end_dt: datetime) -> dict
         "매도금액": _sum(sell_df, "매도금액"),
         "수수료": _sum(sell_df, "수수료"), "실현수익": _sum(sell_df, "실현손익"),
     }
+
+
+def _정산_집계(file_path: str, start_dt: datetime, end_dt: datetime) -> dict:
+    """[start_dt, end_dt) 구간 거래 집계. 매수=매수날짜, 매도=매도날짜 기준 (하위 호환)."""
+    try:
+        df = pd.read_excel(file_path, engine="openpyxl", sheet_name=0)
+    except Exception:
+        return None
+    if df.empty:
+        return None
+    return _정산_데이터_집계(df, start_dt, end_dt)
 
 
 def _정산_시트갱신(file_path: str, 정산일: str, st: dict) -> float:
@@ -2018,66 +2034,164 @@ def _정산_시트갱신(file_path: str, 정산일: str, st: dict) -> float:
     return cum
 
 
-def 일일정산_실행(정산일: str, start_dt: datetime, end_dt: datetime):
-    """종목별 집계 → 시트 갱신 → 텔레그램 1건 발송."""
-    lines = ["🏁 *[비트겟 그리드봇 일일 정산]*", f"📅 {정산일} (KST {SETTLEMENT_HOUR_KST}시 기준)",
-             "━━━━━━━━━━━━━━━"]
-    tb = tbq = 0
-    tba = tsa = tf = tp = 0.0
-    ts = tsq = 0
-    total_cum = 0.0
-    발생 = False
+def _텔레그램_안전발송(text: str):
+    """메시지 길이가 긴 경우 텔레그램 4,096자 제한을 고려해 안전하게 분할 전송."""
+    MAX_LEN = 3800
+    if len(text) <= MAX_LEN:
+        telegram_alert.SendMessage(text)
+        return
+
+    chunks = []
+    current = []
+    current_len = 0
+    for line in text.split("\n"):
+        if current_len + len(line) + 1 > MAX_LEN:
+            chunks.append("\n".join(current))
+            current = [line]
+            current_len = len(line)
+        else:
+            current.append(line)
+            current_len += len(line) + 1
+    if current:
+        chunks.append("\n".join(current))
+
+    for chunk in chunks:
+        try:
+            telegram_alert.SendMessage(chunk)
+        except Exception as e:
+            print(f"[정산 분할알림 전송 실패] {e}", flush=True)
+
+
+def _포맷_정산_섹션(title: str, item_list: list, total_stat: dict, profit_label: str = "실현수익") -> list:
+    """
+    특정 구간(일일/주간/월간/전체)의 상세 및 합계 블록 서식 생성.
+    item_list: [(name, stat_dict, cum_val)]
+    단일 종목인 경우 중복되는 합계 블록을 생략하여 간결하게 출력.
+    """
+    sec = ["━━━━━━━━━━━━━━━", title]
+    for name, st, _ in item_list:
+        p = "+" if st["실현수익"] >= 0 else ""
+        sec += [
+            f"📌 {name}",
+            f"  매수 {st['매수건수']}건 | 수량 {st['매수수량']:g} | {st['매수금액']:,.2f} USDT",
+            f"  매도 {st['매도건수']}건 | 수량 {st['매도수량']:g} | {st['매도금액']:,.2f} USDT",
+            f"  수수료 {st['수수료']:,.4f} USDT",
+            f"  {profit_label} {p}{st['실현수익']:,.4f} USDT",
+        ]
+        sec.append("")
+
+    # 종목이 2개 이상일 때만 전체 합계 블록 출력 (단일 종목 중복 제거)
+    if len(item_list) > 1:
+        tp = total_stat["실현수익"]
+        p = "+" if tp >= 0 else ""
+        sec += [
+            "📊 합계",
+            f"  매수 {total_stat['매수건수']}건 / {total_stat['매수수량']:g} / {total_stat['매수금액']:,.2f} USDT",
+            f"  매도 {total_stat['매도건수']}건 / {total_stat['매도수량']:g} / {total_stat['매도금액']:,.2f} USDT",
+            f"  수수료 {total_stat['수수료']:,.4f} USDT",
+            f"💰 {profit_label}: {p}{tp:,.4f} USDT",
+            "",
+        ]
+    return sec
+
+
+def 일일정산_실행(정산일: str, start_dt: datetime = None, end_dt: datetime = None):
+    """종목별 집계 (일일/주간/월간/전체) → 시트 갱신 → 텔레그램 통합 발송."""
+    if end_dt is None:
+        now = _kst_now()
+        end_dt = now.replace(hour=SETTLEMENT_HOUR_KST, minute=0, second=0, microsecond=0)
+    if start_dt is None:
+        start_dt = end_dt - timedelta(days=1)
+
+    daily_start = start_dt
+    weekly_start = end_dt - timedelta(days=7)
+    monthly_start = end_dt - timedelta(days=30)
+    total_start = datetime(2000, 1, 1)
+
+    daily_items = []
+    weekly_items = []
+    monthly_items = []
+    total_items = []
+
+    def _calc_total(items):
+        t = {
+            "매수건수": 0, "매수수량": 0.0, "매수금액": 0.0,
+            "매도건수": 0, "매도수량": 0.0, "매도금액": 0.0,
+            "수수료": 0.0, "실현수익": 0.0,
+        }
+        for _, st, _ in items:
+            t["매수건수"] += st["매수건수"]; t["매수수량"] += st["매수수량"]; t["매수금액"] += st["매수금액"]
+            t["매도건수"] += st["매도건수"]; t["매도수량"] += st["매도수량"]; t["매도금액"] += st["매도금액"]
+            t["수수료"] += st["수수료"];   t["실현수익"] += st["실현수익"]
+        return t
+
+    total_cum_daily = 0.0
 
     for ticker in 종목코드목록:
         cfg = trade_config.get(ticker) or {}
         fp = cfg.get("file_name")
         if not fp or not os.path.exists(fp):
             continue
+
         try:
-            st = _정산_집계(fp, start_dt, end_dt)
+            df = pd.read_excel(fp, engine="openpyxl", sheet_name=0)
         except Exception as e:
-            print(f"   ⚠️ {ticker} 정산 집계 실패: {e}", flush=True)
-            continue
-        if not st:
+            print(f"   ⚠️ {ticker} 엑셀 로딩 실패: {e}", flush=True)
             continue
 
-        cum = _정산_시트갱신(fp, 정산일, st)
-        total_cum += cum
-        발생 = 발생 or (st["매수건수"] or st["매도건수"])
+        if df.empty:
+            continue
+
+        st_daily = _정산_데이터_집계(df, daily_start, end_dt)
+        st_weekly = _정산_데이터_집계(df, weekly_start, end_dt)
+        st_monthly = _정산_데이터_집계(df, monthly_start, end_dt)
+        st_total = _정산_데이터_집계(df, total_start, end_dt)
+
+        cum = _정산_시트갱신(fp, 정산일, st_daily)
+        total_cum_daily += cum
 
         name = ticker.split("/")[0]
-        p = "+" if st["실현수익"] >= 0 else ""
-        c = "+" if cum >= 0 else ""
-        lines += [
-            f"📌 {name}",
-            f"  매수 {st['매수건수']}건 | 수량 {st['매수수량']:g} | {st['매수금액']:,.2f} USDT",
-            f"  매도 {st['매도건수']}건 | 수량 {st['매도수량']:g} | {st['매도금액']:,.2f} USDT",
-            f"  수수료 {st['수수료']:,.4f} USDT",
-            f"  실현수익 {p}{st['실현수익']:,.4f} USDT",
-            f"  누적수익 {c}{cum:,.4f} USDT",
-            "",
-        ]
-        tb += st["매수건수"]; tbq += st["매수수량"]; tba += st["매수금액"]
-        ts += st["매도건수"]; tsq += st["매도수량"]; tsa += st["매도금액"]
-        tf += st["수수료"];   tp += st["실현수익"]
+        daily_items.append((name, st_daily, cum))
+        weekly_items.append((name, st_weekly, None))
+        monthly_items.append((name, st_monthly, None))
+        total_items.append((name, st_total, None))
 
-    p = "+" if tp >= 0 else ""
-    c = "+" if total_cum >= 0 else ""
+    tot_daily = _calc_total(daily_items)
+    tot_weekly = _calc_total(weekly_items)
+    tot_monthly = _calc_total(monthly_items)
+    tot_total = _calc_total(total_items)
+
+    main_symbol = 종목코드목록[0].split("/")[0] if len(종목코드목록) == 1 else ""
+    header_title = f"🏁 *[비트겟 그리드봇 종합 정산 ({main_symbol})]*" if main_symbol else "🏁 *[비트겟 그리드봇 종합 정산]*"
+    lines = [
+        header_title,
+        f"📅 {정산일} (KST {SETTLEMENT_HOUR_KST}시 기준)",
+    ]
+
+    lines += _포맷_정산_섹션("1️⃣ [일일 정산] (최근 24시간)", daily_items, tot_daily, profit_label="실현수익")
+    lines += _포맷_정산_섹션("2️⃣ [주간 정산] (최근 7일)", weekly_items, tot_weekly, profit_label="실현수익")
+    lines += _포맷_정산_섹션("3️⃣ [월간 정산] (최근 30일)", monthly_items, tot_monthly, profit_label="실현수익")
+    lines += _포맷_정산_섹션("4️⃣ [전체 정산] (전체 기간)", total_items, tot_total, profit_label="누적수익")
+
+    def _sgn(v):
+        return "+" if v >= 0 else ""
+
     lines += [
-        "━━━━━━━━━━━━━━━", "📊 전체 합계",
-        f"  매수 {tb}건 / {tbq:g} / {tba:,.2f} USDT",
-        f"  매도 {ts}건 / {tsq:g} / {tsa:,.2f} USDT",
-        f"  수수료 {tf:,.4f} USDT",
-        f"💰 오늘 실현수익: {p}{tp:,.4f} USDT",
-        f"📈 누적 실현수익: {c}{total_cum:,.4f} USDT",
+        "━━━━━━━━━━━━━━━",
+        "💰 [구간별 수익 및 수수료 요약]",
+        f"  • 오늘(1일): 수익 {_sgn(tot_daily['실현수익'])}{tot_daily['실현수익']:,.4f} USDT | 수수료 {tot_daily['수수료']:,.4f} USDT",
+        f"  • 주간(7일): 수익 {_sgn(tot_weekly['실현수익'])}{tot_weekly['실현수익']:,.4f} USDT | 수수료 {tot_weekly['수수료']:,.4f} USDT",
+        f"  • 월간(30일): 수익 {_sgn(tot_monthly['실현수익'])}{tot_monthly['실현수익']:,.4f} USDT | 수수료 {tot_monthly['수수료']:,.4f} USDT",
+        f"  • 전체 누적: 누적 {_sgn(tot_total['실현수익'])}{tot_total['실현수익']:,.4f} USDT | 총수수료 {tot_total['수수료']:,.4f} USDT",
         f"🔎 봇 정상 가동 중 ({지금().strftime('%Y-%m-%d %H:%M:%S')})",
     ]
+
     msg = "\n".join(lines)
     print(msg, flush=True)
     try:
-        telegram_alert.SendMessage(msg)
+        _텔레그램_안전발송(msg)
     except Exception as e:
-        print(f"[일일정산 알림 실패] {e}", flush=True)
+        print(f"[정산 알림 발송 실패] {e}", flush=True)
 
 
 def 일일정산_체크및실행():
