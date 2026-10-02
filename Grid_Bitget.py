@@ -55,7 +55,7 @@ Bitget USDT 무기한선물에서 '그리드 롱' 전략을 실행합니다.
 
   - 1차 매수 후, 가격이 정해진 % 만큼 하락할 때마다 분할 매수 (차수 증가)
   - 각 차수는 자기 매수가 대비 목표 % 상승 시 그 차수만 개별 청산
-  - 각 차수는 트레일링 매도: +0.7%부터 활성, 고점 대비 -n% 하락 시 해당 차수만 청산
+  - 각 차수는 2단계 트레일링 매도: 1차 +0.7% 도달 후 하회 시 0.7% 보존 매도, 2차 +0.9%부터 고점 대비 -0.2% 트레일링 매도
   - 30분 내 서로 다른 차수 5개 매수 시 30분 매수 쿨링(재개 후 하이브리드: >A 즉시 / ≤A 저점 반등)
   - 3초마다 가격을 확인하는 상주 프로그램 (한 번 켜두면 24시간 실행)
   - 매수/매도 발생 시 텔레그램 알림, 모든 거래는 엑셀 파일에 기록
@@ -104,10 +104,10 @@ Bitget USDT 무기한선물에서 '그리드 롱' 전략을 실행합니다.
 [그리드가 돌아가는 순서]
 --------------------------------------------------------------------------------
   1차 매수 → 가격 -0.7% 하락 → 2차 매수 → 또 -0.7% 하락 → 3차 매수 ...
-  각 차수는 +0.7%부터 트레일링 활성 → 고점에서 -n% 빠지면 그 차수만 청산.
+  각 차수는 1차 +0.7% 보존 트리거(하회 시 0.7% 매도), 2차 +0.9%부터 고점 대비 -0.2% 트레일링 청산.
 
   예) 1차를 100 USDT 매수 → 하락하여 2차 100 USDT 매수 (평단가 내려감)
-      2차 수익률이 1.3%까지 올랐다 1.3-n%로 내려오면 2차만 청산
+      2차 수익률이 +0.8% 찍고 내려오면 0.7%에서 보존 매도, +1.3%까지 올랐다 밀리면 1.1%에서 청산
 
   급락 시(서로 다른 차수 5개 매수) 30분 매수 금지 후, 재개 시점 가격 A를 기준으로
   현재가 > A 이면 즉시 1차수, ≤ A 이면 저점 대비 매수간격만큼 반등 시 1차수만 이어갑니다.
@@ -327,7 +327,7 @@ TOTAL_PROFIT_TARGET_ENABLE = True
 # - 목표 사이클 수익금 (USDT 단위)
 # - 판정: (미실현 + 엑셀 누적실현) - baseline ≥ 이 값 이면 전체 청산
 # - RESTART 후 baseline이 갱신되므로, 매 사이클마다 목표만큼 새로 모아야 함
-TOTAL_PROFIT_TARGET_USDT = 100.0
+TOTAL_PROFIT_TARGET_USDT = 150.0
 
 # 📌 TOTAL_PROFIT_AFTER_LIQUIDATION = "STOP"
 # - 전체 청산 후 봇 동작 모드 (3가지 중 하나):
@@ -363,19 +363,25 @@ TOTAL_PROFIT_CHECK_INTERVAL = 5
 TOTAL_PROFIT_LOG_INTERVAL = 20
 
 
-# --- 트레일링 매도 설정 ---
+# --- 트레일링 매도 설정 (2단계 하이브리드) ---
 # 📌 TRAILING_ENABLE = True
-# - True : +TRAIL_ACTIVATE_PCT 부터 고점 추적, 고점 대비 TRAIL_DISTANCE_PCT 하락 시 매도
+# - True : 2단계 하이브리드 트레일링 스탑 적용
+#          1단계: +TRAIL_STAGE1_PCT 도달 후 하회 시 최소 이익 보존 매도
+#          2단계: +TRAIL_STAGE2_PCT 도달 후 고점 대비 -TRAIL_DISTANCE_PCT 하락 시 매도
 # - False: GRID_TEMPLATE 매도간격 고정 목표가 매도 (기존 방식)
 TRAILING_ENABLE = True
 
-# 📌 TRAIL_ACTIVATE_PCT = 0.7
-# - 트레일링 활성화 수익률(%) — 매수가 대비
-TRAIL_ACTIVATE_PCT = 0.9
+# 📌 TRAIL_STAGE1_PCT = 0.7
+# - 1차 트리거(최소 이익 보존선, %): +0.7% 도달 후 0.7% 이하로 내려가면 익절
+TRAIL_STAGE1_PCT = 0.7
 
-# 📌 TRAIL_DISTANCE_PCT = 0.5
-# - 고점 대비 하락폭(%) — 이만큼 빠지면 해당 차수 청산
-# - 예: 고점 1.3% → 매도선 0.8%
+# 📌 TRAIL_STAGE2_PCT = 0.9
+# - 2차 트리거(다이내믹 트레일링 시작 기준, %): +0.9% 도달 시 고점 추적 시작
+TRAIL_STAGE2_PCT = 0.9
+TRAIL_ACTIVATE_PCT = TRAIL_STAGE2_PCT  # 하위 호환용 별칭
+
+# 📌 TRAIL_DISTANCE_PCT = 0.2
+# - 고점 대비 하락폭(%) — 2단계 진입 후 이만큼 빠지면 해당 차수 청산 (예: 고점 1.3% → 매도선 1.1%)
 TRAIL_DISTANCE_PCT = 0.2
 
 
@@ -487,11 +493,11 @@ GRID_TEMPLATE: Dict[int, Dict[str, Any]] = {
     8: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 143},
     9: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 143},
     10: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 143},
-    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 143} for i in range(11, 20)},
-    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 143} for i in range(20, 50)},
-    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 143} for i in range(50, 75)},
-    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 143} for i in range(75, 100)},
-#    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 143} for i in range(55, 75)},
+    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 160} for i in range(11, 26)},
+    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 185} for i in range(26, 46)},
+    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 223} for i in range(46, 71)},
+    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 262} for i in range(71, 91)},
+    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 307} for i in range(91, 101)},
 }
 
 # 📌 PER_SYMBOL_GRID
@@ -1676,8 +1682,8 @@ def 매수실행(Ticker: str, 현재가: float):
 
         if TRAILING_ENABLE:
             매도안내 = (
-                f"🎯 *트레일링 매도*: 활성`+{TRAIL_ACTIVATE_PCT}%` / "
-                f"고점`-{TRAIL_DISTANCE_PCT}%`\n"
+                f"🎯 *트레일링 매도*: 1차보존`+{TRAIL_STAGE1_PCT}%` / "
+                f"2차활성`+{TRAIL_STAGE2_PCT}%`(고점`-{TRAIL_DISTANCE_PCT}%`)\n"
             )
         else:
             매도안내 = (
@@ -1771,7 +1777,9 @@ def 매수실행(Ticker: str, 현재가: float):
 def 매도실행(Ticker: str, 현재가: float) -> bool:
     """
     그리드 매도 로직
-    - TRAILING_ENABLE: +TRAIL_ACTIVATE_PCT 활성 후 고점 대비 TRAIL_DISTANCE_PCT 하락 시 청산
+    - TRAILING_ENABLE: 2단계 하이브리드 트레일링
+      · 1단계 (+TRAIL_STAGE1_PCT ~ +TRAIL_STAGE2_PCT 미만): 0.7% 이하 하회 시 보존 매도
+      · 2단계 (+TRAIL_STAGE2_PCT 이상): 고점 대비 TRAIL_DISTANCE_PCT 하락 시 청산
     - TRAILING_ENABLE=False: 매도간격 고정 목표가 청산
     - 한 폴링에서 여러 차수가 동시에 청산될 수 있음
     - 반환값: 매도 발생 시 True (이번 폴링에서 매수는 스킵)
@@ -1818,10 +1826,19 @@ def 매도실행(Ticker: str, 현재가: float) -> bool:
             고점갱신됨 = True
 
         매도조건 = False
-        트레일매도선 = 최고수익률 - TRAIL_DISTANCE_PCT
+        트레일매도선 = 0.0
+        트레일단계 = 0
         if TRAILING_ENABLE:
-            활성 = 최고수익률 >= TRAIL_ACTIVATE_PCT
-            매도조건 = 활성 and (현재수익률 <= 트레일매도선)
+            if 최고수익률 >= TRAIL_STAGE2_PCT:
+                # 2단계: 0.9% 이상 도달 후 다이내믹 트레일링 (고점 - 0.2%)
+                트레일단계 = 2
+                트레일매도선 = 최고수익률 - TRAIL_DISTANCE_PCT
+                매도조건 = (현재수익률 <= 트레일매도선)
+            elif 최고수익률 >= TRAIL_STAGE1_PCT:
+                # 1단계: 0.7% 이상 도달 후 1차 이익 보존선 (0.7% 하회 시 매도)
+                트레일단계 = 1
+                트레일매도선 = TRAIL_STAGE1_PCT
+                매도조건 = (현재수익률 <= 트레일매도선)
         else:
             목표가 = 매수가 * (1 + float(config["매도간격"]) / 100.0)
             매도조건 = 현재가 >= 목표가
@@ -1864,9 +1881,10 @@ def 매도실행(Ticker: str, 현재가: float) -> bool:
         매매기록저장(df, file_name)
 
         if TRAILING_ENABLE:
+            단계_태그 = f"{트레일단계}차" if 트레일단계 > 0 else "트레일"
             트레일라인 = (
-                f"📍 *트레일링*: 활성`+{TRAIL_ACTIVATE_PCT}%` / 고점`{최고수익률:.4f}%` "
-                f"/ 매도선`{트레일매도선:.4f}%` / 청산시`{현재수익률:.4f}%`\n"
+                f"📍 *트레일링({단계_태그})*: 1차`+{TRAIL_STAGE1_PCT}%` / 2차`+{TRAIL_STAGE2_PCT}%` "
+                f"/ 고점`{최고수익률:.4f}%` / 매도선`{트레일매도선:.4f}%` / 청산시`{현재수익률:.4f}%`\n"
             )
         else:
             트레일라인 = (
@@ -2246,7 +2264,7 @@ def main_loop():
     print(f"   - 가격 출력: {PRICE_LOG_INTERVAL * POLL_INTERVAL}초마다 (PRICE_LOG_INTERVAL={PRICE_LOG_INTERVAL})")
     print(f"   - 체결가 조회: 최대 {FILL_FETCH_RETRIES}회 재시도, {FILL_FETCH_DELAY}초 간격")
     if TRAILING_ENABLE:
-        print(f"   - 트레일링 매도: 활성 +{TRAIL_ACTIVATE_PCT}% / 고점 -{TRAIL_DISTANCE_PCT}%")
+        print(f"   - 트레일링 매도: 1차보존 +{TRAIL_STAGE1_PCT}% / 2차활성 +{TRAIL_STAGE2_PCT}% (고점 -{TRAIL_DISTANCE_PCT}%)")
     else:
         print(f"   - 트레일링 매도: 비활성 (고정 매도간격)")
     if BUY_COOLDOWN_ENABLE:
@@ -2276,7 +2294,7 @@ def main_loop():
     # 시작 알림
     try:
         trail_line = (
-            f"📍 트레일링: `+{TRAIL_ACTIVATE_PCT}%` 활성 / 고점 `-{TRAIL_DISTANCE_PCT}%`\n"
+            f"📍 트레일링: 1차`+{TRAIL_STAGE1_PCT}%` 보존 / 2차`+{TRAIL_STAGE2_PCT}%` 활성(고점`-{TRAIL_DISTANCE_PCT}%`)\n"
             if TRAILING_ENABLE else "📍 트레일링: `비활성`\n"
         )
         cool_line = (
