@@ -1293,17 +1293,14 @@ def 총수익_계산(Ticker: str, 현재가: float) -> Tuple[float, float, float
 
 
 def 총수익_텔레그램라인(Ticker: str, 현재가: float) -> str:
-    """매수/시작 등 텔레그램에 붙이는 총수익 요약 블록"""
+    """매도/시작 등 텔레그램에 붙이는 총수익 요약 블록 (사이클 핵심 정보만 표시)"""
     미실현, 누적실현, 총합, baseline, 사이클 = 총수익_계산(Ticker, 현재가)
     회차 = 총수익_사이클회차_조회(Ticker)
     return (
         f"🔁 *사이클*: `{회차}회차`\n"
         f"💰 *미실현*: `{미실현:+.4f} USDT`\n"
-        f"💼 *엑셀 누적실현*: `{누적실현:+.4f} USDT`\n"
-        f"📌 *baseline*: `{baseline:+.4f} USDT`\n"
         f"🎯 *사이클 수익*: `{사이클:+.4f} USDT` "
         f"(목표 {TOTAL_PROFIT_TARGET_USDT} USDT)\n"
-        f"📊 *총합(참고)*: `{총합:+.4f} USDT`\n"
     )
 
 
@@ -1705,32 +1702,9 @@ def 매수실행(Ticker: str, 현재가: float):
             f"📐 *슬리피지*: `{매수슬리피지:+.4f}%`\n"
             f"📦 *체결수량*: `{실제체결수량}`\n"
             f"💰 *체결금액*: `{실제체결금액:.6f} USDT`\n"
-            f"{매도안내}"
-            f"📉 *다음 차수 매수 목표가*: `{다음목표가설명}`\n"
-            f"🧩 *매수 트리거*: `{이유}`\n"
             f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
             f"━━━━━━━━━━━━━━━"
         )
-
-        # --- 추가: 총수익 옵션 활성화 시 손익 정보를 메시지에 추가 ---
-        # - 매수 직후(엑셀에 새 행 기록 완료 후) 총수익 계산
-        # - 미실현(현재가 기준) + 누적실현 + 합계를 시간 라인 앞에 삽입
-        # - TOTAL_PROFIT_TARGET_ENABLE = False면 추가 안 함 (기존 메시지 그대로 유지)
-        # - 이번에 매수한 차수도 미실현 손익 계산에 자동 포함됨
-        #   (방금 엑셀 저장 → 미실현손익조회 함수가 새 행도 읽어옴)
-        # - 거래소 API 사용 시(PROFIT_SOURCE=EXCHANGE): 약간의 시간 지연 발생 가능
-        #   (Bitget이 새 포지션 반영하는 데 0.5~2초 정도 걸릴 수 있음)
-        #   → fetch_positions가 아직 반영 전 값이면 EXCEL 모드 결과와 미세 차이 가능
-        # ─────────────────────────────────────────────────────
-        if TOTAL_PROFIT_TARGET_ENABLE:
-            try:
-                손익라인 = 총수익_텔레그램라인(Ticker, 현재가)
-                message = message.replace(
-                    f"🕒 *시간*",
-                    f"{손익라인}🕒 *시간*"
-                )
-            except Exception as e:
-                print(f"[매수 텔레그램 - 총수익 추가 실패] {e}")
 
         telegram_alert.SendMessage(message)
 
@@ -1883,8 +1857,8 @@ def 매도실행(Ticker: str, 현재가: float) -> bool:
         if TRAILING_ENABLE:
             단계_태그 = f"{트레일단계}차" if 트레일단계 > 0 else "트레일"
             트레일라인 = (
-                f"📍 *트레일링({단계_태그})*: 1차`+{TRAIL_STAGE1_PCT}%` / 2차`+{TRAIL_STAGE2_PCT}%` "
-                f"/ 고점`{최고수익률:.4f}%` / 매도선`{트레일매도선:.4f}%` / 청산시`{현재수익률:.4f}%`\n"
+                f"📍 *트레일링({단계_태그})*: 고점`{최고수익률:.4f}%` / "
+                f"매도선`{트레일매도선:.4f}%` / 청산시`{현재수익률:.4f}%`\n"
             )
         else:
             트레일라인 = (
@@ -1902,9 +1876,7 @@ def 매도실행(Ticker: str, 현재가: float) -> bool:
             f"📦 *체결수량*: `{실제체결수량}`\n"
             f"💰 *매도금액*: `{매도금액:.6f} USDT`\n"
             f"{트레일라인}"
-            f"💸 *실현 손익*: `{실현손익:+.4f} USDT`\n"
-            f"📈 *수익률*: `{수익률:+.4f}%`\n"
-            f"💼 *누적 실현손익*: `{현재누적손익:+.4f} USDT`\n"
+            f"✨ *【 실현 손익 】*: *`{실현손익:+.4f} USDT`* (`{수익률:+.4f}%`)\n"
             f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
             f"━━━━━━━━━━━━━━━"
         )
@@ -2089,12 +2061,15 @@ def _포맷_정산_섹션(title: str, item_list: list, total_stat: dict, profit_
     sec = ["━━━━━━━━━━━━━━━", title]
     for name, st, _ in item_list:
         p = "+" if st["실현수익"] >= 0 else ""
+        매도cnt = st.get("매도건수", 0)
+        평균수익 = (st["실현수익"] / 매도cnt) if 매도cnt > 0 else 0.0
+        avg_p = "+" if 평균수익 >= 0 else ""
         sec += [
             f"📌 {name}",
             f"  매수 {st['매수건수']}건 | 수량 {st['매수수량']:g} | {st['매수금액']:,.2f} USDT",
             f"  매도 {st['매도건수']}건 | 수량 {st['매도수량']:g} | {st['매도금액']:,.2f} USDT",
             f"  수수료 {st['수수료']:,.4f} USDT",
-            f"  {profit_label} {p}{st['실현수익']:,.4f} USDT",
+            f"  {profit_label} {p}{st['실현수익']:,.4f} USDT (매도 1회 평균: {avg_p}{평균수익:,.4f} USDT)",
         ]
         sec.append("")
 
@@ -2102,12 +2077,15 @@ def _포맷_정산_섹션(title: str, item_list: list, total_stat: dict, profit_
     if len(item_list) > 1:
         tp = total_stat["실현수익"]
         p = "+" if tp >= 0 else ""
+        tot_매도cnt = total_stat.get("매도건수", 0)
+        tot_평균수익 = (tp / tot_매도cnt) if tot_매도cnt > 0 else 0.0
+        tot_avg_p = "+" if tot_평균수익 >= 0 else ""
         sec += [
             "📊 합계",
             f"  매수 {total_stat['매수건수']}건 / {total_stat['매수수량']:g} / {total_stat['매수금액']:,.2f} USDT",
             f"  매도 {total_stat['매도건수']}건 / {total_stat['매도수량']:g} / {total_stat['매도금액']:,.2f} USDT",
             f"  수수료 {total_stat['수수료']:,.4f} USDT",
-            f"💰 {profit_label}: {p}{tp:,.4f} USDT",
+            f"💰 {profit_label}: {p}{tp:,.4f} USDT (매도 1회 평균: {tot_avg_p}{tot_평균수익:,.4f} USDT)",
             "",
         ]
     return sec
@@ -2194,13 +2172,22 @@ def 일일정산_실행(정산일: str, start_dt: datetime = None, end_dt: datet
     def _sgn(v):
         return "+" if v >= 0 else ""
 
+    def _avg(st):
+        c = st.get("매도건수", 0)
+        return (st["실현수익"] / c) if c > 0 else 0.0
+
+    d_avg = _avg(tot_daily)
+    w_avg = _avg(tot_weekly)
+    m_avg = _avg(tot_monthly)
+    t_avg = _avg(tot_total)
+
     lines += [
         "━━━━━━━━━━━━━━━",
         "💰 [구간별 수익 및 수수료 요약]",
-        f"  • 오늘(1일): 수익 {_sgn(tot_daily['실현수익'])}{tot_daily['실현수익']:,.4f} USDT | 수수료 {tot_daily['수수료']:,.4f} USDT",
-        f"  • 주간(7일): 수익 {_sgn(tot_weekly['실현수익'])}{tot_weekly['실현수익']:,.4f} USDT | 수수료 {tot_weekly['수수료']:,.4f} USDT",
-        f"  • 월간(30일): 수익 {_sgn(tot_monthly['실현수익'])}{tot_monthly['실현수익']:,.4f} USDT | 수수료 {tot_monthly['수수료']:,.4f} USDT",
-        f"  • 전체 누적: 누적 {_sgn(tot_total['실현수익'])}{tot_total['실현수익']:,.4f} USDT | 총수수료 {tot_total['수수료']:,.4f} USDT",
+        f"  • 오늘(1일): 수익 {_sgn(tot_daily['실현수익'])}{tot_daily['실현수익']:,.4f} USDT (1회평균 {_sgn(d_avg)}{d_avg:,.4f}) | 수수료 {tot_daily['수수료']:,.4f} USDT",
+        f"  • 주간(7일): 수익 {_sgn(tot_weekly['실현수익'])}{tot_weekly['실현수익']:,.4f} USDT (1회평균 {_sgn(w_avg)}{w_avg:,.4f}) | 수수료 {tot_weekly['수수료']:,.4f} USDT",
+        f"  • 월간(30일): 수익 {_sgn(tot_monthly['실현수익'])}{tot_monthly['실현수익']:,.4f} USDT (1회평균 {_sgn(m_avg)}{m_avg:,.4f}) | 수수료 {tot_monthly['수수료']:,.4f} USDT",
+        f"  • 전체 누적: 누적 {_sgn(tot_total['실현수익'])}{tot_total['실현수익']:,.4f} USDT (1회평균 {_sgn(t_avg)}{t_avg:,.4f}) | 총수수료 {tot_total['수수료']:,.4f} USDT",
         f"🔎 봇 정상 가동 중 ({지금().strftime('%Y-%m-%d %H:%M:%S')})",
     ]
 
