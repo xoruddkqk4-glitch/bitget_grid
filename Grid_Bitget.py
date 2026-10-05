@@ -363,6 +363,27 @@ TOTAL_PROFIT_CHECK_INTERVAL = 5
 TOTAL_PROFIT_LOG_INTERVAL = 20
 
 
+# --- 3-State Switching Engine (5일선 추세 라이딩) 설정 ⭐ ---
+# 📌 TREND_RIDING_ENABLE = True
+# - True : 5일선 상승 시 매도 정지(포지션 100% 홀딩) & 추세 꺾임 시 총수익 청산(Flash Close) 또는 매도 재개
+# - False: 기능 비활성화 → 기존 그리드 매매만 수행
+TREND_RIDING_ENABLE = True
+
+# 📌 TREND_MIN_HOLD_SECONDS = 1800
+# - 상태 2(추세 라이딩) 진입 후 최소 유지 시간 (초 단위, 1800초 = 30분)
+# - 장중 단기 잔파동(Whipsaw)으로 인한 조기 매도 재개 방지 완충 버퍼
+TREND_MIN_HOLD_SECONDS = 1800
+
+# 📌 MA_TIMEFRAME = "1d", MA_PERIOD = 5
+# - 이동평균 계산 기준 캔들 및 기간 (기본 Bitget 일봉 1D, 5일선)
+MA_TIMEFRAME = "1d"
+MA_PERIOD = 5
+
+# 📌 MA_CACHE_SECONDS = 30
+# - 일봉 fetch_ohlcv 거래소 호출 캐싱 주기 (초 단위, API Rate Limit 방어)
+MA_CACHE_SECONDS = 30
+
+
 # --- 트레일링 매도 설정 (2단계 하이브리드) ---
 # 📌 TRAILING_ENABLE = True
 # - True : 2단계 하이브리드 트레일링 스탑 적용
@@ -493,11 +514,11 @@ GRID_TEMPLATE: Dict[int, Dict[str, Any]] = {
     8: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 143},
     9: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 143},
     10: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 143},
-    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 160} for i in range(11, 26)},
-    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 185} for i in range(26, 46)},
-    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 223} for i in range(46, 71)},
-    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 262} for i in range(71, 91)},
-    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 307} for i in range(91, 101)},
+    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 143} for i in range(11, 26)},
+    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 143} for i in range(26, 46)},
+    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 143} for i in range(46, 71)},
+    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 143} for i in range(71, 91)},
+    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 143} for i in range(91, 101)},
 }
 
 # 📌 PER_SYMBOL_GRID
@@ -1521,6 +1542,110 @@ def 최근_RSI(Ticker: str, timeframe: str = "5m", period: int = 14) -> float:
 
 
 # ===============================
+# 3-State Switching Engine: 5일선(MA5) 기울기 판별 및 30분 완충 버퍼 추세 라이딩
+# ===============================
+_ma5_cache: Dict[str, dict] = {}
+_trend_riding_state: Dict[str, dict] = {}
+
+def is_ma5_rising(Ticker: str) -> bool:
+    """
+    Bitget 일봉(1D) 기준 5일 이동평균선(MA5)의 상승 여부 판별
+    - MA5_today > MA5_yesterday 이면 True (상승 중)
+    - MA5_today <= MA5_yesterday 이면 False (하향/평행)
+    - MA_CACHE_SECONDS(기본 30초) 캐시를 적용하여 거래소 API 호출 최적화
+    """
+    now = time.time()
+    cached = _ma5_cache.get(Ticker)
+    if cached and (now - cached["time"] < MA_CACHE_SECONDS):
+        return cached["is_rising"]
+
+    try:
+        ohlcv = bitgetX.fetch_ohlcv(Ticker, timeframe=MA_TIMEFRAME, limit=MA_PERIOD + 2)
+        if not ohlcv or len(ohlcv) < MA_PERIOD + 1:
+            return False
+
+        # 어제 완결된 5일 종가 평균 (인덱스 -6 ~ -2)
+        ma5_yesterday = sum(float(c[4]) for c in ohlcv[-(MA_PERIOD + 1):-1]) / float(MA_PERIOD)
+        # 오늘 진행 중 봉 포함 5일 종가 평균 (인덱스 -5 ~ -1)
+        ma5_today = sum(float(c[4]) for c in ohlcv[-MA_PERIOD:]) / float(MA_PERIOD)
+
+        is_rising = ma5_today > ma5_yesterday
+        _ma5_cache[Ticker] = {
+            "time": now,
+            "is_rising": is_rising,
+            "ma_today": ma5_today,
+            "ma_yesterday": ma5_yesterday,
+        }
+        return is_rising
+    except Exception as e:
+        print(f"[MA5 계산 실패] {Ticker} / {e}")
+        return False if not cached else cached["is_rising"]
+
+def 현재_MA5_정보(Ticker: str) -> Tuple[float, float, bool]:
+    """캐시된 MA5_today, MA5_yesterday, is_rising 반환 (모니터링용)"""
+    cached = _ma5_cache.get(Ticker)
+    if cached:
+        return cached["ma_today"], cached["ma_yesterday"], cached["is_rising"]
+    return 0.0, 0.0, False
+
+def 추세라이딩_상태체크(Ticker: str, 현재가: float) -> Tuple[bool, bool]:
+    """
+    30분 완충 버퍼(Whipsaw 방어)가 적용된 추세 라이딩(상태 2) 활성 여부 판정
+    [반환] (라이딩_중: bool, 방금_꺾임: bool)
+    - 5일선 상승 시 상태 2 진입 및 진입 시각 기록 (텔레그램 알림 발송)
+    - 상태 2 진입 후 30분(1800초) 동안은 장중 일시 하락에도 상태 2 강제 유지 (보호 락)
+    - 30분 경과 후 5일선이 하향으로 꺾였을 때 비로소 상태 2 종료 (방금_꺾임=True 반환 -> 청산 검사 진입)
+    """
+    now = time.time()
+    state = _trend_riding_state.setdefault(Ticker, {"is_riding": False, "entered_at": 0.0})
+    rising = is_ma5_rising(Ticker)
+    title_symbol = Ticker.split('/')[0]
+
+    if not state["is_riding"]:
+        if rising:
+            state["is_riding"] = True
+            state["entered_at"] = now
+            ma_today, ma_yesterday, _ = 현재_MA5_정보(Ticker)
+            msg = (
+                f"🚀 *[{title_symbol}_추세 라이딩 진입]*\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"📊 *종목*: `{Ticker}`\n"
+                f"📈 *5일선*: 상승 전환 (`{ma_today:.4f} > {ma_yesterday:.4f}`)\n"
+                f"📌 *현재가*: `{현재가:.4f} USDT`\n"
+                f"⏱️ *보호 락*: 최소 {TREND_MIN_HOLD_SECONDS // 60}분간 매도 일시정지 & 100% 홀딩\n"
+                f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
+                f"━━━━━━━━━━━━━━━"
+            )
+            telegram_alert.SendMessage(msg)
+            print(
+                f"🚀 [{title_symbol}] 5일선 상승 전환 -> 상태 2 [추세 라이딩] 진입 "
+                f"(최소 {TREND_MIN_HOLD_SECONDS // 60}분 보호 락 활성화)",
+                flush=True
+            )
+            return True, False
+        return False, False
+    else:
+        # 이미 상태 2(라이딩) 중인 경우
+        elapsed = now - state["entered_at"]
+        if elapsed < TREND_MIN_HOLD_SECONDS:
+            # 30분 보호 락 유지 중: 장중 잔파동(Whipsaw) 무시하고 라이딩 강제 유지
+            return True, False
+
+        # 30분 경과 후: 5일선이 여전히 상승 중이면 라이딩 지속
+        if rising:
+            return True, False
+        else:
+            # 30분 이상 경과 후 5일선 하향 꺾임 발생!
+            state["is_riding"] = False
+            state["entered_at"] = 0.0
+            print(
+                f"📉 [{title_symbol}] 30분 경과 후 5일선 하향 꺾임 감지 -> 추세 라이딩 종료 (청산 검사 진입)",
+                flush=True
+            )
+            return False, True
+
+
+# ===============================
 # 매수 실행 함수
 # ===============================
 def 매수실행(Ticker: str, 현재가: float):
@@ -1639,6 +1764,16 @@ def 매수실행(Ticker: str, 현재가: float):
             order_result = bitgetX.create_market_buy_order(
                 symbol=Ticker, amount=수량, params={"reduceOnly": False}
             )
+        except ccxt.InsufficientFunds as e:
+            print(f"⚠️ [증거금/잔고 부족] {Ticker} {차수}차 매수 스킵 (포지션 감시 및 청산 루프는 정상 지속): {e}")
+            return  # 해당 폴링 매수만 스킵하고 메인 감시 루프는 정상 유지
+        except ccxt.ExchangeError as e:
+            err_msg = str(e).lower()
+            if any(k in err_msg for k in ["insufficient", "margin", "balance"]):
+                print(f"⚠️ [거래소 잔고 부족] {Ticker} {차수}차 매수 스킵 (감시 루프 지속): {e}")
+                return
+            print(f"[매수 거래소 오류] {e}")
+            continue
         except Exception as e:
             print(f"[매수 주문 실패] {e}")
             continue
@@ -2265,6 +2400,10 @@ def main_loop():
         print(f"   - 총 수익 목표: {TOTAL_PROFIT_TARGET_USDT} USDT 도달 시 전체 청산 (소스={PROFIT_SOURCE}, 후속={TOTAL_PROFIT_AFTER_LIQUIDATION})")
     else:
         print(f"   - 총 수익 목표: 비활성화 (TOTAL_PROFIT_TARGET_ENABLE=False)")
+    if TREND_RIDING_ENABLE:
+        print(f"   - 3-State 엔진: 활성화 (일봉 MA{MA_PERIOD} 추세 라이딩, 최소 {TREND_MIN_HOLD_SECONDS // 60}분 완충 락)")
+    else:
+        print(f"   - 3-State 엔진: 비활성화 (기존 그리드)")
     print(f"   - 종목: {종목코드목록}", flush=True)
 
     # 종목별 엑셀 파일 초기화 (시작 알림의 기준가 조회보다 먼저)
@@ -2280,6 +2419,10 @@ def main_loop():
 
     # 시작 알림
     try:
+        trend_line = (
+            f"🚀 3-State 엔진: `일봉 MA{MA_PERIOD} 추세 라이딩` (최소 {TREND_MIN_HOLD_SECONDS // 60}분 완충 락)\n"
+            if TREND_RIDING_ENABLE else "🚀 3-State 엔진: `비활성`\n"
+        )
         trail_line = (
             f"📍 트레일링: 1차`+{TRAIL_STAGE1_PCT}%` 보존 / 2차`+{TRAIL_STAGE2_PCT}%` 활성(고점`-{TRAIL_DISTANCE_PCT}%`)\n"
             if TRAILING_ENABLE else "📍 트레일링: `비활성`\n"
@@ -2304,6 +2447,7 @@ def main_loop():
             f"━━━━━━━━━━━━━━━\n"
             f"⏱ 폴링 주기: `{POLL_INTERVAL}초`\n"
             f"📊 종목: `{', '.join(종목코드목록)}`\n"
+            f"{trend_line}"
             f"{trail_line}"
             f"{cool_line}"
             f"🎯 총수익 목표: `{TOTAL_PROFIT_TARGET_USDT} USDT` / 후속 `{TOTAL_PROFIT_AFTER_LIQUIDATION}`"
@@ -2349,15 +2493,11 @@ def main_loop():
 
                     가격_캐시[Ticker] = 현재가  # 출력용 캐시 저장
 
-                    # --- 총 수익 목표 체크 (매도/매수 보다 먼저) ---
-                    # - 일정 폴링마다 체크 (TOTAL_PROFIT_CHECK_INTERVAL)
-                    # - 청산 발생 시 이번 폴링은 그리드 매도/매수 스킵
-                    # - 총 수익 로그 출력 (TOTAL_PROFIT_LOG_INTERVAL 폴링마다)
-                    # ─────────────────────────────────────────────────
-                    if TOTAL_PROFIT_TARGET_ENABLE and (loop_count % TOTAL_PROFIT_CHECK_INTERVAL == 0):
-                        총수익_청산_발생 = 총수익_체크_및_청산(Ticker, 현재가)
-                        if 총수익_청산_발생:
-                            continue  # 다음 종목으로 (이번 폴링 매도/매수 스킵)
+                    # --- 3-State Switching Engine (5일선 추세 라이딩 판정) ---
+                    라이딩_중 = False
+                    방금_꺾임 = False
+                    if TREND_RIDING_ENABLE:
+                        라이딩_중, 방금_꺾임 = 추세라이딩_상태체크(Ticker, 현재가)
 
                     # 총 수익 모니터링 로그 (선택)
                     if (TOTAL_PROFIT_TARGET_ENABLE
@@ -2367,9 +2507,10 @@ def main_loop():
                             미실현_log, 누적실현_log, 총합_log, baseline_log, 사이클_log = 총수익_계산(Ticker, 현재가)
                             회차_log = 총수익_사이클회차_조회(Ticker)
                             락_표시 = " 🔒락" if 총수익청산락_여부(Ticker) else ""
+                            모드_표시 = " [🚀라이딩]" if 라이딩_중 else ""
                             print(
                                 f"💰 [총수익] {Ticker.split('/')[0]} | "
-                                f"{회차_log}회차 | "
+                                f"{회차_log}회차{모드_표시} | "
                                 f"사이클={사이클_log:+.4f} "
                                 f"(미실현={미실현_log:+.4f} + 누적={누적실현_log:+.4f} "
                                 f"- baseline={baseline_log:+.4f}) "
@@ -2380,10 +2521,41 @@ def main_loop():
                         except Exception as e:
                             print(f"[총수익 로그 실패] {e}")
 
-                    # 매도 먼저 → 매도 발생 시 같은 폴링에서 매수 스킵
-                    매도발생 = 매도실행(Ticker, 현재가)
-                    if not 매도발생:
+                    if 라이딩_중:
+                        # ── 상태 2: [추세 라이딩] 매도 일시정지 (100% 홀딩) & 매수만 유지 ──
                         매수실행(Ticker, 현재가)
+                    else:
+                        # ── 상태 3 및 상태 1: [추세 꺾임 / 그리드 수비 모드] ──
+                        # 1) 목표 순익 달성 검사 및 전량 청산 판단 (꺾임 직후 또는 정기 주기)
+                        총수익_청산_발생 = False
+                        if TOTAL_PROFIT_TARGET_ENABLE:
+                            if 방금_꺾임 or (loop_count % TOTAL_PROFIT_CHECK_INTERVAL == 0):
+                                총수익_청산_발생 = 총수익_체크_및_청산(Ticker, 현재가)
+                                if 총수익_청산_발생:
+                                    continue  # Flash Close 청산 완료 -> 이번 폴링 종료 (다음 사이클 준비)
+
+                        # 방금 꺾였으나 목표 미달로 청산되지 않은 경우 (Case B 안내)
+                        if 방금_꺾임 and not 총수익_청산_발생:
+                            try:
+                                _, _, _, _, 사이클_val = 총수익_계산(Ticker, 현재가)
+                                title_sym = Ticker.split('/')[0]
+                                resume_msg = (
+                                    f"🛡️ *[{title_sym}_그리드 매도 재개]*\n"
+                                    f"━━━━━━━━━━━━━━━\n"
+                                    f"📉 *추세 꺾임*: 5일선 하향 전환 확인\n"
+                                    f"💰 *사이클 순익*: `{사이클_val:+.4f} USDT` (목표 {TOTAL_PROFIT_TARGET_USDT} USDT 미달)\n"
+                                    f"🔄 *조치*: 멈췄던 그리드 매도를 재개하여 고점 순차 익절 수비 모드로 복귀합니다.\n"
+                                    f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
+                                    f"━━━━━━━━━━━━━━━"
+                                )
+                                telegram_alert.SendMessage(resume_msg)
+                            except Exception as e:
+                                print(f"[매도 재개 알림 오류] {e}")
+
+                        # 2) 그리드 매도 실행 (고점 순차 익절) -> 매도 미발생 시 매수 실행
+                        매도발생 = 매도실행(Ticker, 현재가)
+                        if not 매도발생:
+                            매수실행(Ticker, 현재가)
                 except Exception as e:
                     print(f"[{Ticker} 처리 오류] {e}")
 
