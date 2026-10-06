@@ -369,19 +369,21 @@ TOTAL_PROFIT_LOG_INTERVAL = 20
 # - False: 기능 비활성화 → 기존 그리드 매매만 수행
 TREND_RIDING_ENABLE = True
 
-# 📌 TREND_MIN_HOLD_SECONDS = 1800
-# - 상태 2(추세 라이딩) 진입 후 최소 유지 시간 (초 단위, 1800초 = 30분)
-# - 장중 단기 잔파동(Whipsaw)으로 인한 조기 매도 재개 방지 완충 버퍼
-TREND_MIN_HOLD_SECONDS = 1800
-
-# 📌 MA_TIMEFRAME = "1d", MA_PERIOD = 5
-# - 이동평균 계산 기준 캔들 및 기간 (기본 Bitget 일봉 1D, 5일선)
-MA_TIMEFRAME = "1d"
+# 📌 이동평균 계산 기준 캔들 및 기간
+# - 1차 검증: 일봉(1d) 5일선
+# - 2차 검증: 4시간봉(4h) 5선 (1차 이탈 시 즉시 조회 크로스체크)
+MA_TIMEFRAME_1D = "1d"
+MA_TIMEFRAME_4H = "4h"
+MA_TIMEFRAME = MA_TIMEFRAME_1D  # 기존 코드 호환용
 MA_PERIOD = 5
 
-# 📌 MA_CACHE_SECONDS = 30
-# - 일봉 fetch_ohlcv 거래소 호출 캐싱 주기 (초 단위, API Rate Limit 방어)
-MA_CACHE_SECONDS = 30
+# 📌 추세 종료(지지선 이탈) 판정 버퍼 (%)
+# - 0.5% 이탈 기준: 현재가 < 5MA * (1 - 0.005) = 5MA * 0.995
+TREND_EXIT_BUFFER_PCT = 0.5
+
+# 📌 fetch_ohlcv 거래소 호출 캐싱 주기 (초 단위, API Rate Limit 방어)
+MA_CACHE_SECONDS = 30       # 일봉 캐시 30초
+MA_4H_CACHE_SECONDS = 15    # 4시간봉 캐시 15초
 
 
 # --- 트레일링 매도 설정 (2단계 하이브리드) ---
@@ -390,7 +392,7 @@ MA_CACHE_SECONDS = 30
 #          1단계: +TRAIL_STAGE1_PCT 도달 후 하회 시 최소 이익 보존 매도
 #          2단계: +TRAIL_STAGE2_PCT 도달 후 고점 대비 -TRAIL_DISTANCE_PCT 하락 시 매도
 # - False: GRID_TEMPLATE 매도간격 고정 목표가 매도 (기존 방식)
-TRAILING_ENABLE = True
+TRAILING_ENABLE = False
 
 # 📌 TRAIL_STAGE1_PCT = 0.7
 # - 1차 트리거(최소 이익 보존선, %): +0.7% 도달 후 0.7% 이하로 내려가면 익절
@@ -1542,107 +1544,127 @@ def 최근_RSI(Ticker: str, timeframe: str = "5m", period: int = 14) -> float:
 
 
 # ===============================
-# 3-State Switching Engine: 5일선(MA5) 기울기 판별 및 30분 완충 버퍼 추세 라이딩
+# 3-State Switching Engine: 5일선(MA5) MTF 지지선 이탈 기반 추세 라이딩
 # ===============================
-_ma5_cache: Dict[str, dict] = {}
+_ma5_cache: Dict[str, Dict[str, dict]] = {}
 _trend_riding_state: Dict[str, dict] = {}
 
-def is_ma5_rising(Ticker: str) -> bool:
+def 이동평균_조회(Ticker: str, timeframe: str = "1d") -> Tuple[float, float, bool]:
     """
-    Bitget 일봉(1D) 기준 5일 이동평균선(MA5)의 상승 여부 판별
-    - MA5_today > MA5_yesterday 이면 True (상승 중)
-    - MA5_today <= MA5_yesterday 이면 False (하향/평행)
-    - MA_CACHE_SECONDS(기본 30초) 캐시를 적용하여 거래소 API 호출 최적화
+    지정 타임프레임(1d, 4h)의 5선(MA5) 계산 및 캐싱
+    [반환] (ma_today, ma_yesterday, is_rising)
     """
     now = time.time()
-    cached = _ma5_cache.get(Ticker)
-    if cached and (now - cached["time"] < MA_CACHE_SECONDS):
-        return cached["is_rising"]
+    ticker_cache = _ma5_cache.setdefault(Ticker, {})
+    cached = ticker_cache.get(timeframe)
+    cache_ttl = MA_4H_CACHE_SECONDS if timeframe == "4h" else MA_CACHE_SECONDS
+
+    if cached and (now - cached["time"] < cache_ttl):
+        return cached["ma_today"], cached["ma_yesterday"], cached["is_rising"]
 
     try:
-        ohlcv = bitgetX.fetch_ohlcv(Ticker, timeframe=MA_TIMEFRAME, limit=MA_PERIOD + 2)
+        ohlcv = bitgetX.fetch_ohlcv(Ticker, timeframe=timeframe, limit=MA_PERIOD + 2)
         if not ohlcv or len(ohlcv) < MA_PERIOD + 1:
-            return False
+            return (cached["ma_today"], cached["ma_yesterday"], cached["is_rising"]) if cached else (0.0, 0.0, False)
 
-        # 어제 완결된 5일 종가 평균 (인덱스 -6 ~ -2)
-        ma5_yesterday = sum(float(c[4]) for c in ohlcv[-(MA_PERIOD + 1):-1]) / float(MA_PERIOD)
-        # 오늘 진행 중 봉 포함 5일 종가 평균 (인덱스 -5 ~ -1)
-        ma5_today = sum(float(c[4]) for c in ohlcv[-MA_PERIOD:]) / float(MA_PERIOD)
+        # 직전 완결봉 기준 5개 봉 종가 평균 (인덱스 -6 ~ -2)
+        ma_yesterday = sum(float(c[4]) for c in ohlcv[-(MA_PERIOD + 1):-1]) / float(MA_PERIOD)
+        # 현재 진행 중 봉 포함 5개 봉 종가 평균 (인덱스 -5 ~ -1)
+        ma_today = sum(float(c[4]) for c in ohlcv[-MA_PERIOD:]) / float(MA_PERIOD)
 
-        is_rising = ma5_today > ma5_yesterday
-        _ma5_cache[Ticker] = {
+        is_rising = ma_today > ma_yesterday
+        ticker_cache[timeframe] = {
             "time": now,
             "is_rising": is_rising,
-            "ma_today": ma5_today,
-            "ma_yesterday": ma5_yesterday,
+            "ma_today": ma_today,
+            "ma_yesterday": ma_yesterday,
         }
-        return is_rising
+        return ma_today, ma_yesterday, is_rising
     except Exception as e:
-        print(f"[MA5 계산 실패] {Ticker} / {e}")
-        return False if not cached else cached["is_rising"]
+        print(f"[MA5({timeframe}) 계산 실패] {Ticker} / {e}")
+        if cached:
+            return cached["ma_today"], cached["ma_yesterday"], cached["is_rising"]
+        return 0.0, 0.0, False
 
-def 현재_MA5_정보(Ticker: str) -> Tuple[float, float, bool]:
-    """캐시된 MA5_today, MA5_yesterday, is_rising 반환 (모니터링용)"""
-    cached = _ma5_cache.get(Ticker)
-    if cached:
-        return cached["ma_today"], cached["ma_yesterday"], cached["is_rising"]
-    return 0.0, 0.0, False
+def is_ma5_rising(Ticker: str) -> bool:
+    """일봉 5일선 상승 여부 (하위 호환)"""
+    _, _, is_rising = 이동평균_조회(Ticker, timeframe=MA_TIMEFRAME_1D)
+    return is_rising
+
+def 현재_MA5_정보(Ticker: str, timeframe: str = "1d") -> Tuple[float, float, bool]:
+    """캐시된 ma_today, ma_yesterday, is_rising 반환 (모니터링용)"""
+    return 이동평균_조회(Ticker, timeframe=timeframe)
 
 def 추세라이딩_상태체크(Ticker: str, 현재가: float) -> Tuple[bool, bool]:
     """
-    30분 완충 버퍼(Whipsaw 방어)가 적용된 추세 라이딩(상태 2) 활성 여부 판정
+    MTF(일봉 + 4시간봉) 지지선 이탈 필터가 적용된 추세 라이딩(상태 2) 활성 여부 판정
     [반환] (라이딩_중: bool, 방금_꺾임: bool)
-    - 5일선 상승 시 상태 2 진입 및 진입 시각 기록 (텔레그램 알림 발송)
-    - 상태 2 진입 후 30분(1800초) 동안은 장중 일시 하락에도 상태 2 강제 유지 (보호 락)
-    - 30분 경과 후 5일선이 하향으로 꺾였을 때 비로소 상태 2 종료 (방금_꺾임=True 반환 -> 청산 검사 진입)
+    
+    1. 진입 조건:
+       - 일봉 5일선 상승 중 (ma5_today > ma5_yesterday)
+       - AND 현재가가 일봉 5MA 지지선 이상 (현재가 >= ma_1d_today) -> 진입 즉시 튕겨나감 방지
+    
+    2. 종료(꺾임) 조건 (MTF 2단계 검증):
+       - 1단계: 현재가 < 일봉 5MA * (1 - TREND_EXIT_BUFFER_PCT/100)  [기본 0.995]
+       - 2단계 (1단계 발생 시에만 4시간봉 즉시 조회):
+               현재가 < 4시간 5MA * (1 - TREND_EXIT_BUFFER_PCT/100) [기본 0.995]
+       - 1단계 및 2단계 동시 이탈 시 상태 2 종료 -> 방금_꺾임=True 반환 (청산/수비 검사 진입)
     """
     now = time.time()
     state = _trend_riding_state.setdefault(Ticker, {"is_riding": False, "entered_at": 0.0})
-    rising = is_ma5_rising(Ticker)
+    ma_1d_today, ma_1d_yesterday, rising_1d = 이동평균_조회(Ticker, timeframe=MA_TIMEFRAME_1D)
     title_symbol = Ticker.split('/')[0]
 
+    buffer_multiplier = 1.0 - (TREND_EXIT_BUFFER_PCT / 100.0)
+
     if not state["is_riding"]:
-        if rising:
+        # 진입: 일봉 5일선 상승 + 현재가가 일봉 5일선 지지선 이상
+        if rising_1d and ma_1d_today > 0 and 현재가 >= ma_1d_today:
             state["is_riding"] = True
             state["entered_at"] = now
-            ma_today, ma_yesterday, _ = 현재_MA5_정보(Ticker)
             msg = (
                 f"🚀 *[{title_symbol}_추세 라이딩 진입]*\n"
                 f"━━━━━━━━━━━━━━━\n"
                 f"📊 *종목*: `{Ticker}`\n"
-                f"📈 *5일선*: 상승 전환 (`{ma_today:.4f} > {ma_yesterday:.4f}`)\n"
+                f"📈 *일봉 5MA*: 상승 전환 (`{ma_1d_today:.4f} > {ma_1d_yesterday:.4f}`)\n"
                 f"📌 *현재가*: `{현재가:.4f} USDT`\n"
-                f"⏱️ *보호 락*: 최소 {TREND_MIN_HOLD_SECONDS // 60}분간 매도 일시정지 & 100% 홀딩\n"
+                f"🛡️ *종료 조건*: 일봉 및 4시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% 동시 이탈 시\n"
                 f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
                 f"━━━━━━━━━━━━━━━"
             )
             telegram_alert.SendMessage(msg)
             print(
-                f"🚀 [{title_symbol}] 5일선 상승 전환 -> 상태 2 [추세 라이딩] 진입 "
-                f"(최소 {TREND_MIN_HOLD_SECONDS // 60}분 보호 락 활성화)",
+                f"🚀 [{title_symbol}] 일봉 5MA 상승 & 안착 -> 상태 2 [추세 라이딩] 진입 "
+                f"(종료조건: 일봉+4시간 5MA -{TREND_EXIT_BUFFER_PCT}% 동시 이탈)",
                 flush=True
             )
             return True, False
         return False, False
     else:
         # 이미 상태 2(라이딩) 중인 경우
-        elapsed = now - state["entered_at"]
-        if elapsed < TREND_MIN_HOLD_SECONDS:
-            # 30분 보호 락 유지 중: 장중 잔파동(Whipsaw) 무시하고 라이딩 강제 유지
+        if ma_1d_today <= 0:
             return True, False
 
-        # 30분 경과 후: 5일선이 여전히 상승 중이면 라이딩 지속
-        if rising:
-            return True, False
-        else:
-            # 30분 이상 경과 후 5일선 하향 꺾임 발생!
-            state["is_riding"] = False
-            state["entered_at"] = 0.0
-            print(
-                f"📉 [{title_symbol}] 30분 경과 후 5일선 하향 꺾임 감지 -> 추세 라이딩 종료 (청산 검사 진입)",
-                flush=True
-            )
-            return False, True
+        # 1차 검증: 일봉 5MA 지지선 이탈 (-0.5%) 확인
+        이탈기준_1d = ma_1d_today * buffer_multiplier
+        if 현재가 < 이탈기준_1d:
+            # ➔ 1차 이탈 발생 시에만 4시간봉 즉시 조회 (Lazy Evaluation)
+            ma_4h_today, _, _ = 이동평균_조회(Ticker, timeframe=MA_TIMEFRAME_4H)
+            if ma_4h_today > 0:
+                이탈기준_4h = ma_4h_today * buffer_multiplier
+                # 2차 검증: 4시간봉 5MA 지지선도 동시 이탈했는가?
+                if 현재가 < 이탈기준_4h:
+                    state["is_riding"] = False
+                    state["entered_at"] = 0.0
+                    print(
+                        f"📉 [{title_symbol}] 일봉/4시간봉 5MA 지지선(-{TREND_EXIT_BUFFER_PCT}%) 동시 이탈 감지 "
+                        f"(현재가 {현재가:.4f} < 일봉기준 {이탈기준_1d:.4f} & 4시간기준 {이탈기준_4h:.4f}) -> 추세 라이딩 종료",
+                        flush=True
+                    )
+                    return False, True
+
+        # 지지선 유지 중: 라이딩 지속
+        return True, False
 
 
 # ===============================
@@ -2401,7 +2423,7 @@ def main_loop():
     else:
         print(f"   - 총 수익 목표: 비활성화 (TOTAL_PROFIT_TARGET_ENABLE=False)")
     if TREND_RIDING_ENABLE:
-        print(f"   - 3-State 엔진: 활성화 (일봉 MA{MA_PERIOD} 추세 라이딩, 최소 {TREND_MIN_HOLD_SECONDS // 60}분 완충 락)")
+        print(f"   - 3-State 엔진: 활성화 (일봉+4시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% MTF 지지선 이탈 필터)")
     else:
         print(f"   - 3-State 엔진: 비활성화 (기존 그리드)")
     print(f"   - 종목: {종목코드목록}", flush=True)
@@ -2420,7 +2442,7 @@ def main_loop():
     # 시작 알림
     try:
         trend_line = (
-            f"🚀 3-State 엔진: `일봉 MA{MA_PERIOD} 추세 라이딩` (최소 {TREND_MIN_HOLD_SECONDS // 60}분 완충 락)\n"
+            f"🚀 3-State 엔진: `일봉+4시간봉 5MA MTF 추세 라이딩` (이탈: -{TREND_EXIT_BUFFER_PCT}% 동시하회)\n"
             if TREND_RIDING_ENABLE else "🚀 3-State 엔진: `비활성`\n"
         )
         trail_line = (
@@ -2542,7 +2564,7 @@ def main_loop():
                                 resume_msg = (
                                     f"🛡️ *[{title_sym}_그리드 매도 재개]*\n"
                                     f"━━━━━━━━━━━━━━━\n"
-                                    f"📉 *추세 꺾임*: 5일선 하향 전환 확인\n"
+                                    f"📉 *추세 꺾임*: 일봉/4시간봉 5MA 지지선(-{TREND_EXIT_BUFFER_PCT}%) 동시 이탈 확인\n"
                                     f"💰 *사이클 순익*: `{사이클_val:+.4f} USDT` (목표 {TOTAL_PROFIT_TARGET_USDT} USDT 미달)\n"
                                     f"🔄 *조치*: 멈췄던 그리드 매도를 재개하여 고점 순차 익절 수비 모드로 복귀합니다.\n"
                                     f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
