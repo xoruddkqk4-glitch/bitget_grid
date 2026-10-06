@@ -133,7 +133,7 @@
   - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건)
   - MA5 슬라이싱 계산 및 30분 완충 버퍼 상태 전이 단위 테스트 100% 통과
 
-## [2026-10-06 21:44] 업데이트 이력 (Commit ID: TBD)
+## [2026-10-06 21:44] 업데이트 이력 (Commit ID: 3ea0415)
 - **수정 내용**:
   - **3-State Switching Engine 추세 전환 기준 개편 (시간 가드 제거 및 MTF 지지선 이탈 필터 도입) ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
     - **1) 30분 시간 가드(`TREND_MIN_HOLD_SECONDS`) 완전 삭제**:
