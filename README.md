@@ -155,7 +155,7 @@
   - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
   - MTF 이탈 판정 시뮬레이션 테스트 4종(정상 진입, 라이딩 유지, 4시간봉 방어선 유지, 일봉/4시간봉 동시 이탈) 100% 통과
 
-## [2026-10-07 21:20] 업데이트 이력 (Commit ID: 96a830c)
+## [2026-10-07 21:20] 업데이트 이력 (Commit ID: 87b788b)
 - **수정 내용**:
   - **그리드 매매 매수 및 매도 텔레그램 메시지 보유금 현황 정보 추가 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
     - **1) 거래소 가용 잔고 조회 헬퍼 함수 (`거래소_USDT_잔고조회`) 구현**:
