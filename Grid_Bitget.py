@@ -1950,6 +1950,13 @@ def 매수실행(Ticker: str, 현재가: float):
             " (rebase 하이브리드 진입)" if used_rebase else ""
         )
         이유 = f"가격조건={가격조건}, 삼음봉={삼음봉조건}, 음봉전용={음봉전용}{rebase_note}"
+        손익블록 = ""
+        if TOTAL_PROFIT_TARGET_ENABLE:
+            try:
+                손익블록 = 총수익_텔레그램라인(Ticker, 현재가)
+            except Exception as e:
+                print(f"[매수 텔레그램 - 총수익 추가 실패] {e}")
+
         보유금라인 = 보유금_텔레그램라인(Ticker, df)
         message = (
             f"🚨[{title_symbol}_그리드롱 진입 완료]*🚨\n"
@@ -1961,6 +1968,7 @@ def 매수실행(Ticker: str, 현재가: float):
             f"📐 *슬리피지*: `{매수슬리피지:+.4f}%`\n"
             f"📦 *체결수량*: `{실제체결수량}`\n"
             f"💰 *체결금액*: `{실제체결금액:.6f} USDT`\n"
+            f"{손익블록}"
             f"{보유금라인}"
             f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
             f"━━━━━━━━━━━━━━━"
