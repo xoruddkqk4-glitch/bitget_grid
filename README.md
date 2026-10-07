@@ -187,7 +187,7 @@
 - **검증 결과**:
   - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
 
-## [2026-10-08 00:48] 업데이트 이력 (Commit ID: pending)
+## [2026-10-08 00:48] 업데이트 이력 (Commit ID: 8bd31d6)
 - **수정 내용**:
   - **봇 시작(재시작) 텔레그램 메시지 보유금 현황 및 사이클 손익 블록 강화 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
     - **1) 시작 시 보유금 현황 블록(`balance_lines`) 연동**:
