@@ -1327,6 +1327,107 @@ def 총수익_텔레그램라인(Ticker: str, 현재가: float) -> str:
     )
 
 
+# --- 거래소 잔고 및 보유금 현황 함수 ---
+_최근_잔여보유금_캐시: Optional[float] = None
+
+def 거래소_USDT_잔고조회() -> Optional[float]:
+    """
+    거래소 fetch_balance로 선물 계좌의 남아있는 가용 USDT(free) 잔고 조회.
+    ccxt 표준 필드 및 비트겟 v2 raw data를 탐색하여 안전하게 float로 반환.
+    API 일시 오류 시 직전 성공 캐시값을 fallback으로 사용.
+    """
+    global _최근_잔여보유금_캐시
+    try:
+        balance = bitgetX.fetch_balance(params={"type": "swap"})
+
+        free_val = None
+        # 1) 표준 ccxt 구조 탐색
+        if "USDT" in balance and isinstance(balance["USDT"], dict):
+            free_val = balance["USDT"].get("free")
+        if free_val is None and "free" in balance and isinstance(balance["free"], dict):
+            free_val = balance["free"].get("USDT")
+
+        # 2) raw info 탐색 (fallback)
+        if free_val is None:
+            info = balance.get("info", {})
+            data_items = []
+            if isinstance(info, list):
+                data_items = info
+            elif isinstance(info, dict):
+                data = info.get("data")
+                if isinstance(data, list):
+                    data_items = data
+                elif isinstance(data, dict):
+                    data_items = [data]
+
+            for item in data_items:
+                if not isinstance(item, dict):
+                    continue
+                coin = str(item.get("marginCoin") or item.get("coin") or "").upper()
+                if coin == "USDT":
+                    avail = (
+                        item.get("available")
+                        or item.get("availableBalance")
+                        or item.get("crossMarginAvailable")
+                        or item.get("maxTransferOut")
+                    )
+                    if avail is not None:
+                        free_val = avail
+                        break
+
+        if free_val is not None:
+            _최근_잔여보유금_캐시 = float(free_val)
+            return _최근_잔여보유금_캐시
+
+    except Exception as e:
+        print(f"[거래소 가용 잔고 조회 실패] {e}")
+
+    return _최근_잔여보유금_캐시
+
+
+def 보유금_현황_조회(Ticker: str, df: Optional[pd.DataFrame] = None) -> Tuple[float, Optional[float], Optional[float]]:
+    """
+    현재 진입한 총 금액, 남아있는 보유금(가용잔고), 총 보유금을 계산하여 반환.
+    [반환] (현재진입총금액, 남아있는보유금, 총보유금)
+    - 현재진입총금액: 엑셀 미청산 차수들의 매수금액 합계 (USDT)
+    - 남아있는보유금: 거래소 선물 계좌의 가용 USDT 잔고 (USDT)
+    - 총보유금: 현재진입총금액 + 남아있는보유금
+    """
+    if df is None:
+        file_name = trade_config[Ticker]["file_name"]
+        df = 매매기록불러오기(file_name)
+
+    미청산 = df[df["매도날짜"].isnull()]
+    if 미청산.empty:
+        현재진입 = 0.0
+    else:
+        현재진입 = float(pd.to_numeric(미청산["매수금액"], errors="coerce").fillna(0.0).sum())
+
+    남아있는보유금 = 거래소_USDT_잔고조회()
+    if 남아있는보유금 is not None:
+        총보유금 = 현재진입 + 남아있는보유금
+    else:
+        총보유금 = None
+
+    return 현재진입, 남아있는보유금, 총보유금
+
+
+def 보유금_텔레그램라인(Ticker: str, df: Optional[pd.DataFrame] = None) -> str:
+    """
+    그리드 매매 텔레그램 알림용 [현재 진입한 총 금액 + 남아있는 보유금의 금액 = 총 보유금] 문자열 라인 생성.
+    """
+    try:
+        현재진입, 잔여, 총보유 = 보유금_현황_조회(Ticker, df)
+        if 잔여 is not None and 총보유 is not None:
+            return f"💼 *보유금 현황*: `[진입 {현재진입:,.4f} + 잔여 {잔여:,.4f} = 총 {총보유:,.4f} USDT]`\n"
+        else:
+            return f"💼 *보유금 현황*: `[진입 {현재진입:,.4f} + 잔여 조회실패 = 총 N/A USDT]`\n"
+    except Exception as e:
+        print(f"[보유금 텔레그램라인 생성 실패] {e}")
+        return ""
+
+
+
 def 총수익_체크_및_청산(Ticker: str, 현재가: float) -> bool:
     """
     사이클 수익이 목표에 도달하면 전체 차수를 시장가로 청산.
@@ -1849,6 +1950,7 @@ def 매수실행(Ticker: str, 현재가: float):
             " (rebase 하이브리드 진입)" if used_rebase else ""
         )
         이유 = f"가격조건={가격조건}, 삼음봉={삼음봉조건}, 음봉전용={음봉전용}{rebase_note}"
+        보유금라인 = 보유금_텔레그램라인(Ticker, df)
         message = (
             f"🚨[{title_symbol}_그리드롱 진입 완료]*🚨\n"
             f"━━━━━━━━━━━━━━━\n"
@@ -1859,6 +1961,7 @@ def 매수실행(Ticker: str, 현재가: float):
             f"📐 *슬리피지*: `{매수슬리피지:+.4f}%`\n"
             f"📦 *체결수량*: `{실제체결수량}`\n"
             f"💰 *체결금액*: `{실제체결금액:.6f} USDT`\n"
+            f"{보유금라인}"
             f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
             f"━━━━━━━━━━━━━━━"
         )
@@ -2022,6 +2125,15 @@ def 매도실행(Ticker: str, 현재가: float) -> bool:
                 f"🎯 *고정 목표가*: `{매수가 * (1 + float(config['매도간격']) / 100.0):.6f} USDT`\n"
             )
 
+        손익블록 = ""
+        if TOTAL_PROFIT_TARGET_ENABLE:
+            try:
+                손익블록 = 총수익_텔레그램라인(Ticker, 현재가)
+            except Exception as e:
+                print(f"[매도 텔레그램 - 총수익 추가 실패] {e}")
+
+        보유금라인 = 보유금_텔레그램라인(Ticker, df)
+
         message = (
             f"🌟[{title_symbol}_그리드롱 청산 완료]🌟\n"
             f"━━━━━━━━━━━━━━━\n"
@@ -2034,18 +2146,11 @@ def 매도실행(Ticker: str, 현재가: float) -> bool:
             f"💰 *매도금액*: `{매도금액:.6f} USDT`\n"
             f"{트레일라인}"
             f"✨ *【 실현 손익 】*: *`{실현손익:+.4f} USDT`* (`{수익률:+.4f}%`)\n"
+            f"{손익블록}"
+            f"{보유금라인}"
             f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
             f"━━━━━━━━━━━━━━━"
         )
-        if TOTAL_PROFIT_TARGET_ENABLE:
-            try:
-                손익라인 = 총수익_텔레그램라인(Ticker, 현재가)
-                message = message.replace(
-                    f"🕒 *시간*",
-                    f"{손익라인}🕒 *시간*"
-                )
-            except Exception as e:
-                print(f"[매도 텔레그램 - 총수익 추가 실패] {e}")
 
         telegram_alert.SendMessage(message)
 
