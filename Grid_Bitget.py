@@ -1016,7 +1016,7 @@ def 쿨링_rebase_클리어(Ticker: str):
     state["pending_rebase"] = False
     쿨링상태저장(Ticker, state)
 
-def 시작시_매수기준_요약(Ticker: str) -> str:
+def 시작시_매수기준_요약(Ticker: str, 현재가: float = 0.0) -> str:
     """
     봇 시작 알림용: 현재가 / 다음 매수 기준가 / 목표가 요약.
     - rebase 중: A 및 (>A 즉시 / ≤A 저점 반등) 안내
@@ -1026,7 +1026,9 @@ def 시작시_매수기준_요약(Ticker: str) -> str:
     sym = Ticker.split("/")[0]
     lines: list[str] = []
 
-    현재가 = 현재가조회(Ticker)
+    if 현재가 <= 0:
+        현재가 = 현재가조회(Ticker)
+
     if 현재가 > 0:
         lines.append(f"💰 *{sym} 시작 시 현재가*: `{현재가:.6f} USDT`")
     else:
@@ -2567,16 +2569,34 @@ def main_loop():
             f"→ `{BUY_COOLDOWN_PAUSE_SEC // 60}분` + 하이브리드 rebase (>A 즉시/≤A 저점반등)\n"
             if BUY_COOLDOWN_ENABLE else "🧊 쿨링: `비활성`\n"
         )
-        price_lines = "".join(시작시_매수기준_요약(t) for t in 종목코드목록)
+        price_lines = ""
         profit_lines = ""
-        if TOTAL_PROFIT_TARGET_ENABLE:
-            for t in 종목코드목록:
+        balance_lines = ""
+        for t in 종목코드목록:
+            px = 현재가조회(t)
+            if px <= 0:
                 try:
-                    px = 현재가조회(t)
-                    if px > 0:
-                        profit_lines += 총수익_텔레그램라인(t, px)
+                    _df = 매매기록불러오기(trade_config[t]["file_name"])
+                    if _df is not None and not _df.empty:
+                        _cleared = _df[_df["매수가"].notna()]
+                        if not _cleared.empty:
+                            px = float(_cleared.iloc[-1]["매수가"])
+                except Exception:
+                    pass
+
+            price_lines += 시작시_매수기준_요약(t, 현재가=px)
+
+            if TOTAL_PROFIT_TARGET_ENABLE:
+                try:
+                    profit_lines += 총수익_텔레그램라인(t, px if px > 0 else 0.0)
                 except Exception as e:
                     print(f"[시작 알림 총수익 조회 실패] {t} / {e}")
+
+            try:
+                balance_lines += 보유금_텔레그램라인(t)
+            except Exception as e:
+                print(f"[시작 알림 보유금 조회 실패] {t} / {e}")
+
         telegram_alert.SendMessage(
             f"🚀 *[비트겟 그리드봇 시작]*\n"
             f"━━━━━━━━━━━━━━━\n"
@@ -2587,8 +2607,9 @@ def main_loop():
             f"{cool_line}"
             f"🎯 총수익 목표: `{TOTAL_PROFIT_TARGET_USDT} USDT` / 후속 `{TOTAL_PROFIT_AFTER_LIQUIDATION}`"
             f"{' (활성)' if TOTAL_PROFIT_TARGET_ENABLE else ' (비활성)'}\n"
-            f"{profit_lines}"
             f"{price_lines}"
+            f"{profit_lines}"
+            f"{balance_lines}"
             f"🕒 시간: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
             f"━━━━━━━━━━━━━━━"
         )
