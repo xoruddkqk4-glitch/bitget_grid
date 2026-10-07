@@ -177,7 +177,7 @@
   - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
   - 실제 엑셀 파일(`SOXL-USDT_비트겟그리드_LONG폴.xlsx`) 기반 미청산 진입금액 및 가용 잔고 합산 단위 포맷팅 테스트 통과
 
-## [2026-10-08 00:36] 업데이트 이력 (Commit ID: pending)
+## [2026-10-08 00:36] 업데이트 이력 (Commit ID: 60957fe)
 - **수정 내용**:
   - **그리드 매수 텔레그램 메시지 사이클 및 미실현 손익 요약 블록 추가 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
     - **1) 진입(매수) 완료 알림 메시지 정보 강화**:
