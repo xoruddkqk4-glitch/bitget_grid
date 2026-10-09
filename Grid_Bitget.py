@@ -1429,6 +1429,34 @@ def 보유금_텔레그램라인(Ticker: str, df: Optional[pd.DataFrame] = None)
         return ""
 
 
+def 전체_보유금_현황_조회() -> Tuple[float, Optional[float], Optional[float]]:
+    """
+    모든 운용 종목의 현재 진입한 총 금액 합계, 거래소 가용 잔고(잔여), 총 보유금 계산.
+    [반환] (총진입금액, 남아있는보유금, 총보유금)
+    """
+    총진입 = 0.0
+    for ticker in 종목코드목록:
+        try:
+            cfg = trade_config.get(ticker) or {}
+            fp = cfg.get("file_name")
+            if fp and os.path.exists(fp):
+                df = 매매기록불러오기(fp)
+                if df is not None and not df.empty:
+                    미청산 = df[df["매도날짜"].isnull()]
+                    if not 미청산.empty:
+                        총진입 += float(pd.to_numeric(미청산["매수금액"], errors="coerce").fillna(0.0).sum())
+        except Exception as e:
+            print(f"[전체 보유금 현황 조회 오류 - {ticker}] {e}", flush=True)
+
+    남아있는보유금 = 거래소_USDT_잔고조회()
+    if 남아있는보유금 is not None:
+        총보유금 = 총진입 + 남아있는보유금
+    else:
+        총보유금 = None
+
+    return 총진입, 남아있는보유금, 총보유금
+
+
 
 def 총수익_체크_및_청산(Ticker: str, 현재가: float) -> bool:
     """
@@ -2324,24 +2352,111 @@ def _텔레그램_안전발송(text: str):
             print(f"[정산 분할알림 전송 실패] {e}", flush=True)
 
 
-def _포맷_정산_섹션(title: str, item_list: list, total_stat: dict, profit_label: str = "실현수익") -> list:
+def _포맷_일일_정산_섹션(
+    title: str,
+    daily_items: list,
+    day2_items: list,
+    day3_items: list,
+    tot_daily: dict,
+    tot_day2: dict,
+    tot_day3: dict,
+    date_1d: str,
+    date_2d: str,
+    date_3d: str,
+) -> list:
     """
-    특정 구간(일일/주간/월간/전체)의 상세 및 합계 블록 서식 생성.
-    item_list: [(name, stat_dict, cum_val)]
-    단일 종목인 경우 중복되는 합계 블록을 생략하여 간결하게 출력.
+    일일 정산(최근 3일: 1일전, 2일전, 3일전) 전용 포맷터.
+    📌 종목명
+      매수 N건 | 수량 N | N USDT
+      매도 N건 | 수량 N | N USDT
+      [1일전(YYYY-MM-DD)] 실현수익 +N USDT | 매도 1회 평균: +N USDT | 수수료 N USDT
+      [2일전(YYYY-MM-DD)] 실현수익 +N USDT | 매도 1회 평균: +N USDT | 수수료 N USDT
+      [3일전(YYYY-MM-DD)] 실현수익 +N USDT | 매도 1회 평균: +N USDT | 수수료 N USDT
     """
     sec = ["━━━━━━━━━━━━━━━", title]
+
+    d2_map = {item[0]: item[1] for item in day2_items}
+    d3_map = {item[0]: item[1] for item in day3_items}
+
+    def _line(tag, dt_str, st):
+        p = "+" if st["실현수익"] >= 0 else ""
+        c = st.get("매도건수", 0)
+        avg = (st["실현수익"] / c) if c > 0 else 0.0
+        avg_p = "+" if avg >= 0 else ""
+        return f"  [{tag}({dt_str})] 실현수익 {p}{st['실현수익']:,.4f} USDT | 매도 1회 평균: {avg_p}{avg:,.4f} USDT | 수수료 {st['수수료']:,.4f} USDT"
+
+    for name, st1, _ in daily_items:
+        st2 = d2_map.get(name) or {"실현수익": 0.0, "매도건수": 0, "수수료": 0.0}
+        st3 = d3_map.get(name) or {"실현수익": 0.0, "매도건수": 0, "수수료": 0.0}
+
+        sec += [
+            f"📌 {name}",
+            f"  매수 {st1['매수건수']}건 | 수량 {st1['매수수량']:g} | {st1['매수금액']:,.2f} USDT",
+            f"  매도 {st1['매도건수']}건 | 수량 {st1['매도수량']:g} | {st1['매도금액']:,.2f} USDT",
+            _line("1일전", date_1d, st1),
+            _line("2일전", date_2d, st2),
+            _line("3일전", date_3d, st3),
+            "",
+        ]
+
+    # 다중 종목일 경우 합계 블록
+    if len(daily_items) > 1:
+        sec += [
+            "📊 합계",
+            f"  매수 {tot_daily['매수건수']}건 / {tot_daily['매수수량']:g} / {tot_daily['매수금액']:,.2f} USDT",
+            f"  매도 {tot_daily['매도건수']}건 / {tot_daily['매도수량']:g} / {tot_daily['매도금액']:,.2f} USDT",
+            _line("1일전", date_1d, tot_daily),
+            _line("2일전", date_2d, tot_day2),
+            _line("3일전", date_3d, tot_day3),
+            "",
+        ]
+
+    return sec
+
+
+def _포맷_정산_섹션(
+    title: str,
+    item_list: list,
+    total_stat: dict,
+    profit_label: str = "실현수익",
+    days: Optional[int] = None,
+    show_divider: bool = True,
+    item_days_map: Optional[dict] = None,
+) -> list:
+    """
+    특정 구간(주간/월간/전체)의 상세 및 합계 블록 서식 생성.
+    item_list: [(name, stat_dict, cum_val)]
+    days: 기간 일수 (지정 시 '일일 수익 평균' 지표 추가 표기).
+    show_divider: 상단 구분선 출력 여부.
+    item_days_map: 종목별 가동 일수 맵 {name: days}.
+    수수료는 실현수익/누적수익 행의 괄호 안에 통합 표기.
+    단일 종목인 경우 중복되는 합계 블록을 생략하여 간결하게 출력.
+    """
+    sec = []
+    if show_divider:
+        sec.append("━━━━━━━━━━━━━━━")
+    sec.append(title)
+
     for name, st, _ in item_list:
         p = "+" if st["실현수익"] >= 0 else ""
         매도cnt = st.get("매도건수", 0)
         평균수익 = (st["실현수익"] / 매도cnt) if 매도cnt > 0 else 0.0
         avg_p = "+" if 평균수익 >= 0 else ""
+
+        # 기간 일수 확인 (종목별 일수 우선, 없으면 기본 days)
+        it_days = (item_days_map.get(name) if item_days_map else None) or days
+        if it_days and it_days > 0:
+            일일평균수익 = st["실현수익"] / it_days
+            day_p = "+" if 일일평균수익 >= 0 else ""
+            avg_str = f"매도 1회 평균: {avg_p}{평균수익:,.4f} USDT | 일일 수익 평균: {day_p}{일일평균수익:,.4f} USDT | 수수료 {st['수수료']:,.4f} USDT"
+        else:
+            avg_str = f"매도 1회 평균: {avg_p}{평균수익:,.4f} USDT | 수수료 {st['수수료']:,.4f} USDT"
+
         sec += [
             f"📌 {name}",
             f"  매수 {st['매수건수']}건 | 수량 {st['매수수량']:g} | {st['매수금액']:,.2f} USDT",
             f"  매도 {st['매도건수']}건 | 수량 {st['매도수량']:g} | {st['매도금액']:,.2f} USDT",
-            f"  수수료 {st['수수료']:,.4f} USDT",
-            f"  {profit_label} {p}{st['실현수익']:,.4f} USDT (매도 1회 평균: {avg_p}{평균수익:,.4f} USDT)",
+            f"  {profit_label} {p}{st['실현수익']:,.4f} USDT ({avg_str})",
         ]
         sec.append("")
 
@@ -2352,19 +2467,26 @@ def _포맷_정산_섹션(title: str, item_list: list, total_stat: dict, profit_
         tot_매도cnt = total_stat.get("매도건수", 0)
         tot_평균수익 = (tp / tot_매도cnt) if tot_매도cnt > 0 else 0.0
         tot_avg_p = "+" if tot_평균수익 >= 0 else ""
+
+        if days and days > 0:
+            tot_일일평균수익 = tp / days
+            tot_day_p = "+" if tot_일일평균수익 >= 0 else ""
+            tot_avg_str = f"매도 1회 평균: {tot_avg_p}{tot_평균수익:,.4f} USDT | 일일 수익 평균: {tot_day_p}{tot_일일평균수익:,.4f} USDT | 수수료 {total_stat['수수료']:,.4f} USDT"
+        else:
+            tot_avg_str = f"매도 1회 평균: {tot_avg_p}{tot_평균수익:,.4f} USDT | 수수료 {total_stat['수수료']:,.4f} USDT"
+
         sec += [
             "📊 합계",
             f"  매수 {total_stat['매수건수']}건 / {total_stat['매수수량']:g} / {total_stat['매수금액']:,.2f} USDT",
             f"  매도 {total_stat['매도건수']}건 / {total_stat['매도수량']:g} / {total_stat['매도금액']:,.2f} USDT",
-            f"  수수료 {total_stat['수수료']:,.4f} USDT",
-            f"💰 {profit_label}: {p}{tp:,.4f} USDT (매도 1회 평균: {tot_avg_p}{tot_평균수익:,.4f} USDT)",
+            f"💰 {profit_label}: {p}{tp:,.4f} USDT ({tot_avg_str})",
             "",
         ]
     return sec
 
 
 def 일일정산_실행(정산일: str, start_dt: datetime = None, end_dt: datetime = None):
-    """종목별 집계 (일일/주간/월간/전체) → 시트 갱신 → 텔레그램 통합 발송."""
+    """종목별 집계 (일일 3일치/주간/월간/전체) → 시트 갱신 → 텔레그램 통합 발송."""
     if end_dt is None:
         now = _kst_now()
         end_dt = now.replace(hour=SETTLEMENT_HOUR_KST, minute=0, second=0, microsecond=0)
@@ -2372,11 +2494,21 @@ def 일일정산_실행(정산일: str, start_dt: datetime = None, end_dt: datet
         start_dt = end_dt - timedelta(days=1)
 
     daily_start = start_dt
+    day2_start = end_dt - timedelta(days=2)
+    day2_end = end_dt - timedelta(days=1)
+    day3_start = end_dt - timedelta(days=3)
+    day3_end = end_dt - timedelta(days=2)
+
+    date_day2 = (end_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+    date_day3 = (end_dt - timedelta(days=2)).strftime("%Y-%m-%d")
+
     weekly_start = end_dt - timedelta(days=7)
     monthly_start = end_dt - timedelta(days=30)
     total_start = datetime(2000, 1, 1)
 
     daily_items = []
+    day2_items = []
+    day3_items = []
     weekly_items = []
     monthly_items = []
     total_items = []
@@ -2394,6 +2526,9 @@ def 일일정산_실행(정산일: str, start_dt: datetime = None, end_dt: datet
         return t
 
     total_cum_daily = 0.0
+    ref_end = end_dt.replace(tzinfo=None) if end_dt else datetime.now()
+    overall_min_date = None
+    item_total_days = {}
 
     for ticker in 종목코드목록:
         cfg = trade_config.get(ticker) or {}
@@ -2411,6 +2546,8 @@ def 일일정산_실행(정산일: str, start_dt: datetime = None, end_dt: datet
             continue
 
         st_daily = _정산_데이터_집계(df, daily_start, end_dt)
+        st_day2 = _정산_데이터_집계(df, day2_start, day2_end)
+        st_day3 = _정산_데이터_집계(df, day3_start, day3_end)
         st_weekly = _정산_데이터_집계(df, weekly_start, end_dt)
         st_monthly = _정산_데이터_집계(df, monthly_start, end_dt)
         st_total = _정산_데이터_집계(df, total_start, end_dt)
@@ -2418,16 +2555,38 @@ def 일일정산_실행(정산일: str, start_dt: datetime = None, end_dt: datet
         cum = _정산_시트갱신(fp, 정산일, st_daily)
         total_cum_daily += cum
 
+        # 종목 첫 거래일 계산 (전체 정산 일일 평균용)
+        b_dates = pd.to_datetime(df.get("매수날짜"), errors="coerce").dropna()
+        s_dates = pd.to_datetime(df.get("매도날짜"), errors="coerce").dropna()
+        all_dates = pd.concat([b_dates, s_dates])
+        if not all_dates.empty:
+            t_min = all_dates.min()
+            if hasattr(t_min, "tz_localize") and t_min.tzinfo is not None:
+                t_min = t_min.tz_localize(None)
+            t_days = max(1, (ref_end.date() - t_min.date()).days)
+            if overall_min_date is None or t_min < overall_min_date:
+                overall_min_date = t_min
+        else:
+            t_days = 1
+
         name = ticker.split("/")[0]
+        item_total_days[name] = t_days
+
         daily_items.append((name, st_daily, cum))
+        day2_items.append((name, st_day2, None))
+        day3_items.append((name, st_day3, None))
         weekly_items.append((name, st_weekly, None))
         monthly_items.append((name, st_monthly, None))
         total_items.append((name, st_total, None))
 
     tot_daily = _calc_total(daily_items)
+    tot_day2 = _calc_total(day2_items)
+    tot_day3 = _calc_total(day3_items)
     tot_weekly = _calc_total(weekly_items)
     tot_monthly = _calc_total(monthly_items)
     tot_total = _calc_total(total_items)
+
+    tot_total_days = max(1, (ref_end.date() - overall_min_date.date()).days) if overall_min_date else 1
 
     main_symbol = 종목코드목록[0].split("/")[0] if len(종목코드목록) == 1 else ""
     header_title = f"🏁 *[비트겟 그리드봇 종합 정산 ({main_symbol})]*" if main_symbol else "🏁 *[비트겟 그리드봇 종합 정산]*"
@@ -2436,32 +2595,40 @@ def 일일정산_실행(정산일: str, start_dt: datetime = None, end_dt: datet
         f"📅 {정산일} (KST {SETTLEMENT_HOUR_KST}시 기준)",
     ]
 
-    lines += _포맷_정산_섹션("1️⃣ [일일 정산] (최근 24시간)", daily_items, tot_daily, profit_label="실현수익")
-    lines += _포맷_정산_섹션("2️⃣ [주간 정산] (최근 7일)", weekly_items, tot_weekly, profit_label="실현수익")
-    lines += _포맷_정산_섹션("3️⃣ [월간 정산] (최근 30일)", monthly_items, tot_monthly, profit_label="실현수익")
-    lines += _포맷_정산_섹션("4️⃣ [전체 정산] (전체 기간)", total_items, tot_total, profit_label="누적수익")
+    # 1️⃣ [일일 정산] (1일전/2일전/3일전 통합)
+    date_1d = 정산일
+    lines += _포맷_일일_정산_섹션(
+        "1️⃣ [일일 정산]",
+        daily_items, day2_items, day3_items,
+        tot_daily, tot_day2, tot_day3,
+        date_1d, date_day2, date_day3,
+    )
 
-    def _sgn(v):
-        return "+" if v >= 0 else ""
+    # 2️⃣ [주간 정산] (최근 7일)
+    lines += _포맷_정산_섹션("2️⃣ [주간 정산] (최근 7일)", weekly_items, tot_weekly, profit_label="실현수익", days=7)
 
-    def _avg(st):
-        c = st.get("매도건수", 0)
-        return (st["실현수익"] / c) if c > 0 else 0.0
+    # 3️⃣ [월간 정산] (최근 30일)
+    lines += _포맷_정산_섹션("3️⃣ [월간 정산] (최근 30일)", monthly_items, tot_monthly, profit_label="실현수익", days=30)
 
-    d_avg = _avg(tot_daily)
-    w_avg = _avg(tot_weekly)
-    m_avg = _avg(tot_monthly)
-    t_avg = _avg(tot_total)
+    # 4️⃣ [전체 정산] (전체 기간: N일)
+    lines += _포맷_정산_섹션(f"4️⃣ [전체 정산] (전체 기간: {tot_total_days}일)", total_items, tot_total, profit_label="누적수익", days=tot_total_days, item_days_map=item_total_days)
 
-    lines += [
-        "━━━━━━━━━━━━━━━",
-        "💰 [구간별 수익 및 수수료 요약]",
-        f"  • 오늘(1일): 수익 {_sgn(tot_daily['실현수익'])}{tot_daily['실현수익']:,.4f} USDT (1회평균 {_sgn(d_avg)}{d_avg:,.4f}) | 수수료 {tot_daily['수수료']:,.4f} USDT",
-        f"  • 주간(7일): 수익 {_sgn(tot_weekly['실현수익'])}{tot_weekly['실현수익']:,.4f} USDT (1회평균 {_sgn(w_avg)}{w_avg:,.4f}) | 수수료 {tot_weekly['수수료']:,.4f} USDT",
-        f"  • 월간(30일): 수익 {_sgn(tot_monthly['실현수익'])}{tot_monthly['실현수익']:,.4f} USDT (1회평균 {_sgn(m_avg)}{m_avg:,.4f}) | 수수료 {tot_monthly['수수료']:,.4f} USDT",
-        f"  • 전체 누적: 누적 {_sgn(tot_total['실현수익'])}{tot_total['실현수익']:,.4f} USDT (1회평균 {_sgn(t_avg)}{t_avg:,.4f}) | 총수수료 {tot_total['수수료']:,.4f} USDT",
-        f"🔎 봇 정상 가동 중 ({지금().strftime('%Y-%m-%d %H:%M:%S')})",
-    ]
+    # 💰 [구간별 수익 및 수수료 요약] 은 사용자 요청에 따라 생략
+
+    # 현재 보유금 현황
+    lines.append("━━━━━━━━━━━━━━━")
+    try:
+        총진입, 잔여, 총보유 = 전체_보유금_현황_조회()
+        if 잔여 is not None and 총보유 is not None:
+            lines.append(f"💼 현재 보유금 현황: [진입 {총진입:,.4f} + 잔여 {잔여:,.4f} = 총 {총보유:,.4f} USDT]")
+        else:
+            lines.append(f"💼 현재 보유금 현황: [진입 {총진입:,.4f} + 잔여 조회실패 = 총 N/A USDT]")
+    except Exception as e:
+        print(f"[보유금 현황 조회 실패] {e}", flush=True)
+
+    # 🔎 봇 정상 가동 중 (메시지의 가장 마지막!)
+    lines.append(f"🔎 봇 정상 가동 중 ({지금().strftime('%Y-%m-%d %H:%M:%S')})")
+
 
     msg = "\n".join(lines)
     print(msg, flush=True)
