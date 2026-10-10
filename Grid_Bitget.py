@@ -2257,6 +2257,7 @@ def _정산_데이터_집계(df: pd.DataFrame, start_dt: datetime, end_dt: datet
         "매수건수": 0, "매수수량": 0.0, "매수금액": 0.0,
         "매도건수": 0, "매도수량": 0.0, "매도금액": 0.0,
         "수수료": 0.0, "실현수익": 0.0,
+        "거래일수": 0, "거래일목록": set(),
     }
     if df is None or df.empty:
         return empty_res
@@ -2266,8 +2267,17 @@ def _정산_데이터_집계(df: pd.DataFrame, start_dt: datetime, end_dt: datet
     cs = start_dt.replace(tzinfo=None) if start_dt else datetime.min
     ce = end_dt.replace(tzinfo=None) if end_dt else datetime.max
 
-    buy_df = df[b.notna() & (b >= cs) & (b < ce)]
-    sell_df = df[s.notna() & (s >= cs) & (s < ce)]
+    buy_mask = b.notna() & (b >= cs) & (b < ce)
+    sell_mask = s.notna() & (s >= cs) & (s < ce)
+
+    buy_df = df[buy_mask]
+    sell_df = df[sell_mask]
+
+    # 구간 내 실제 거래(매수 또는 매도)가 발생한 고유 일자 집계
+    b_dates = set(b[buy_mask].dt.date)
+    s_dates = set(s[sell_mask].dt.date)
+    trade_dates = b_dates.union(s_dates)
+    trading_days = len(trade_dates)
 
     def _sum(d, col):
         return round(float(pd.to_numeric(d.get(col), errors="coerce").fillna(0).sum()), 6)
@@ -2278,6 +2288,7 @@ def _정산_데이터_집계(df: pd.DataFrame, start_dt: datetime, end_dt: datet
         "매도건수": int(len(sell_df)), "매도수량": _sum(sell_df, "매도수량"),
         "매도금액": _sum(sell_df, "매도금액"),
         "수수료": _sum(sell_df, "수수료"), "실현수익": _sum(sell_df, "실현손익"),
+        "거래일수": trading_days, "거래일목록": trade_dates,
     }
 
 
@@ -2414,6 +2425,117 @@ def _포맷_일일_정산_섹션(
     return sec
 
 
+def 현재_롱포지션_현황_조회(Ticker: str) -> Optional[dict]:
+    """
+    거래소 fetch_positions로 Ticker의 현재 롱 포지션 상태를 상세 조회 (비트겟 앱 Positions 카드 정보).
+    [반환] dict: {
+        'symbol': str, 'side': str, 'contracts': float, 'entryPrice': float,
+        'markPrice': float, 'notional': float, 'unrealizedPnl': float,
+        'percentage': float (ROE %), 'margin': float, 'leverage': int,
+        'marginMode': str,
+    } 또는 None (API 오류 시)
+    """
+    try:
+        positions = bitgetX.fetch_positions([Ticker])
+        for pos in positions:
+            sym = pos.get('symbol')
+            # ccxt symbol 또는 raw info symbol 매칭
+            raw_sym = pos.get('info', {}).get('symbol')
+            target_clean = Ticker.replace('/', '').split(':')[0]
+            if sym != Ticker and raw_sym != target_clean:
+                continue
+
+            contracts = float(pos.get('contracts', 0) or 0)
+            if contracts <= 0:
+                continue
+
+            side = str(pos.get('side', '')).lower()
+            hold_side = str(pos.get('info', {}).get('holdSide', '')).lower()
+            if side != 'long' and hold_side != 'long':
+                continue
+
+            upnl = pos.get('unrealizedPnl')
+            if upnl is None:
+                upnl = pos.get('info', {}).get('unrealisedPnl', 0) or 0
+            upnl = float(upnl)
+
+            # ROE (%) 계산: ccxt percentage 또는 raw uplRatio
+            roe = pos.get('percentage')
+            if roe is None:
+                upl_ratio = pos.get('info', {}).get('uplRatio')
+                if upl_ratio is not None:
+                    roe = float(upl_ratio) * 100.0
+                else:
+                    roe = 0.0
+            else:
+                roe = float(roe)
+
+            entry_price = float(pos.get('entryPrice') or pos.get('info', {}).get('openPriceAvg') or 0.0)
+            mark_price = float(pos.get('markPrice') or pos.get('info', {}).get('markPrice') or 0.0)
+            notional = float(pos.get('notional') or pos.get('info', {}).get('notionalUsd') or 0.0)
+            if notional == 0.0 and mark_price > 0 and contracts > 0:
+                notional = mark_price * contracts
+
+            margin = float(pos.get('initialMargin') or pos.get('collateral') or pos.get('info', {}).get('margin') or 0.0)
+            leverage = int(pos.get('leverage') or pos.get('info', {}).get('leverage') or 1)
+            margin_mode = str(pos.get('marginMode') or pos.get('marginType') or pos.get('info', {}).get('marginMode') or 'cross').capitalize()
+
+            return {
+                'symbol': Ticker,
+                'side': 'Long',
+                'contracts': contracts,
+                'entryPrice': entry_price,
+                'markPrice': mark_price,
+                'notional': notional,
+                'unrealizedPnl': upnl,
+                'percentage': roe,
+                'margin': margin,
+                'leverage': leverage,
+                'marginMode': margin_mode,
+            }
+        return {'symbol': Ticker, 'contracts': 0.0}
+    except Exception as e:
+        print(f"[현재 포지션 현황 조회 실패 - {Ticker}] {e}", flush=True)
+        return None
+
+
+def _포맷_포지션_현황_섹션() -> list:
+    """
+    일일 정산 메시지용 통합 롱 포지션 현황 섹션 (거래소 앱 Positions 탭 정보 포맷팅).
+    '현재 보유금 현황' 바로 위에 배치됨.
+    """
+    sec = ["━━━━━━━━━━━━━━━"]
+    for ticker in 종목코드목록:
+        name = ticker.split("/")[0]
+        pos = 현재_롱포지션_현황_조회(ticker)
+        if pos is None:
+            sec += [
+                f"📈 [현재 포지션 현황 ({name})]",
+                f"  • 포지션: 조회 실패 (거래소 API 확인 필요)",
+                "",
+            ]
+        elif pos.get("contracts", 0.0) <= 0:
+            sec += [
+                f"📈 [현재 포지션 현황 ({name})]",
+                f"  • 포지션: 보유 포지션 없음 (0.0 USDT)",
+                "",
+            ]
+        else:
+            pnl = pos["unrealizedPnl"]
+            pnl_p = "+" if pnl >= 0 else ""
+            roe = pos["percentage"]
+            roe_p = "+" if roe >= 0 else ""
+            sec += [
+                f"📈 [현재 포지션 현황 ({name})]",
+                f"  • 포지션: {pos['side']} {pos['leverage']}x ({pos['marginMode']} USDT)",
+                f"  • 미실현 손익: {pnl_p}{pnl:,.4f} USDT (ROE {roe_p}{roe:,.2f}%)",
+                f"  • 진입가: {pos['entryPrice']:,.4f} | 시장가: {pos['markPrice']:,.4f} USDT",
+                f"  • 포지션 규모: {pos['notional']:,.2f} USDT ({pos['contracts']:g} {name})",
+                "",
+            ]
+    return sec
+
+
 def _포맷_정산_섹션(
     title: str,
     item_list: list,
@@ -2443,12 +2565,17 @@ def _포맷_정산_섹션(
         평균수익 = (st["실현수익"] / 매도cnt) if 매도cnt > 0 else 0.0
         avg_p = "+" if 평균수익 >= 0 else ""
 
-        # 기간 일수 확인 (종목별 일수 우선, 없으면 기본 days)
-        it_days = (item_days_map.get(name) if item_days_map else None) or days
+        # 기간 일수 확인 (종목별 일수 우선, 없으면 st 거래일수, 없으면 기본 days)
+        it_days = (item_days_map.get(name) if item_days_map else None)
+        if it_days is None:
+            it_days = st.get("거래일수")
+        if it_days is None:
+            it_days = days
+
         if it_days and it_days > 0:
             일일평균수익 = st["실현수익"] / it_days
             day_p = "+" if 일일평균수익 >= 0 else ""
-            avg_str = f"매도 1회 평균: {avg_p}{평균수익:,.4f} USDT | 일일 수익 평균: {day_p}{일일평균수익:,.4f} USDT | 수수료 {st['수수료']:,.4f} USDT"
+            avg_str = f"매도 1회 평균: {avg_p}{평균수익:,.4f} USDT | 일일 수익 평균: {day_p}{일일평균수익:,.4f} USDT ({it_days}일 기준) | 수수료 {st['수수료']:,.4f} USDT"
         else:
             avg_str = f"매도 1회 평균: {avg_p}{평균수익:,.4f} USDT | 수수료 {st['수수료']:,.4f} USDT"
 
@@ -2468,10 +2595,11 @@ def _포맷_정산_섹션(
         tot_평균수익 = (tp / tot_매도cnt) if tot_매도cnt > 0 else 0.0
         tot_avg_p = "+" if tot_평균수익 >= 0 else ""
 
-        if days and days > 0:
-            tot_일일평균수익 = tp / days
+        tot_days = total_stat.get("거래일수") if (total_stat.get("거래일수") is not None and total_stat.get("거래일수") > 0) else days
+        if tot_days and tot_days > 0:
+            tot_일일평균수익 = tp / tot_days
             tot_day_p = "+" if tot_일일평균수익 >= 0 else ""
-            tot_avg_str = f"매도 1회 평균: {tot_avg_p}{tot_평균수익:,.4f} USDT | 일일 수익 평균: {tot_day_p}{tot_일일평균수익:,.4f} USDT | 수수료 {total_stat['수수료']:,.4f} USDT"
+            tot_avg_str = f"매도 1회 평균: {tot_avg_p}{tot_평균수익:,.4f} USDT | 일일 수익 평균: {tot_day_p}{tot_일일평균수익:,.4f} USDT ({tot_days}일 기준) | 수수료 {total_stat['수수료']:,.4f} USDT"
         else:
             tot_avg_str = f"매도 1회 평균: {tot_avg_p}{tot_평균수익:,.4f} USDT | 수수료 {total_stat['수수료']:,.4f} USDT"
 
@@ -2518,11 +2646,19 @@ def 일일정산_실행(정산일: str, start_dt: datetime = None, end_dt: datet
             "매수건수": 0, "매수수량": 0.0, "매수금액": 0.0,
             "매도건수": 0, "매도수량": 0.0, "매도금액": 0.0,
             "수수료": 0.0, "실현수익": 0.0,
+            "거래일수": 0,
         }
+        all_trade_dates = set()
         for _, st, _ in items:
             t["매수건수"] += st["매수건수"]; t["매수수량"] += st["매수수량"]; t["매수금액"] += st["매수금액"]
             t["매도건수"] += st["매도건수"]; t["매도수량"] += st["매도수량"]; t["매도금액"] += st["매도금액"]
             t["수수료"] += st["수수료"];   t["실현수익"] += st["실현수익"]
+            dates = st.get("거래일목록")
+            if isinstance(dates, set):
+                all_trade_dates.update(dates)
+            elif isinstance(dates, (list, tuple)):
+                all_trade_dates.update(dates)
+        t["거래일수"] = len(all_trade_dates)
         return t
 
     total_cum_daily = 0.0
@@ -2604,16 +2740,32 @@ def 일일정산_실행(정산일: str, start_dt: datetime = None, end_dt: datet
         date_1d, date_day2, date_day3,
     )
 
-    # 2️⃣ [주간 정산] (최근 7일)
-    lines += _포맷_정산_섹션("2️⃣ [주간 정산] (최근 7일)", weekly_items, tot_weekly, profit_label="실현수익", days=7)
+    # 2️⃣ [주간 정산] (최근 7일 / 거래 N일)
+    주간_거래일수 = tot_weekly.get("거래일수", 0) if len(weekly_items) > 1 else (weekly_items[0][1].get("거래일수", 0) if weekly_items else 0)
+    lines += _포맷_정산_섹션(
+        f"2️⃣ [주간 정산] (최근 7일 / 거래 {주간_거래일수}일)",
+        weekly_items, tot_weekly,
+        profit_label="실현수익",
+        days=주간_거래일수,
+    )
 
-    # 3️⃣ [월간 정산] (최근 30일)
-    lines += _포맷_정산_섹션("3️⃣ [월간 정산] (최근 30일)", monthly_items, tot_monthly, profit_label="실현수익", days=30)
+    # 3️⃣ [월간 정산] (최근 30일 / 거래 N일)
+    월간_거래일수 = tot_monthly.get("거래일수", 0) if len(monthly_items) > 1 else (monthly_items[0][1].get("거래일수", 0) if monthly_items else 0)
+    lines += _포맷_정산_섹션(
+        f"3️⃣ [월간 정산] (최근 30일 / 거래 {월간_거래일수}일)",
+        monthly_items, tot_monthly,
+        profit_label="실현수익",
+        days=월간_거래일수,
+    )
 
     # 4️⃣ [전체 정산] (전체 기간: N일)
     lines += _포맷_정산_섹션(f"4️⃣ [전체 정산] (전체 기간: {tot_total_days}일)", total_items, tot_total, profit_label="누적수익", days=tot_total_days, item_days_map=item_total_days)
 
-    # 💰 [구간별 수익 및 수수료 요약] 은 사용자 요청에 따라 생략
+    # 📈 [현재 포지션 현황] (비트겟 선물 앱 Positions 카드 정보 - 보유금 현황 상단)
+    try:
+        lines += _포맷_포지션_현황_섹션()
+    except Exception as e:
+        print(f"[포지션 현황 섹션 생성 실패] {e}", flush=True)
 
     # 현재 보유금 현황
     lines.append("━━━━━━━━━━━━━━━")
