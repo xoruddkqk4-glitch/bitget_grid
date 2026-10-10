@@ -418,7 +418,7 @@ BUY_COOLDOWN_ENABLE = True
 
 # 📌 BUY_COOLDOWN_WINDOW_SEC = 600
 # - 매수 횟수 집계 구간 (초) — 10분
-BUY_COOLDOWN_WINDOW_SEC = 1800
+BUY_COOLDOWN_WINDOW_SEC = 2400
 
 # 📌 BUY_COOLDOWN_BUY_COUNT = 5
 # - 위 구간 내 '서로 다른 차수' 매수가 이 값 이상이면 쿨링 발동
