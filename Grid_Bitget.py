@@ -1365,32 +1365,66 @@ def 공백복원_예약매수_감시(Ticker: str, 현재가: float) -> bool:
 
 def 시작시_매수기준_요약(Ticker: str, 현재가: float = 0.0) -> str:
     """
-    봇 시작 알림용: 현재가 / 다음 매수 기준가 / 목표가 요약.
+    봇 시작 알림용: 다음 매도 목표가 / 현재가 / 다음 매수 기준가 / 매수 목표가 요약.
+    - 가격 내림차순(높은 가격 ➔ 낮은 가격)으로 정렬하여 표시
+    - 미청산 포지션이 있을 경우 가격 상승 시 최우선 도달하는 '다음 매도 목표가' 포함
     - rebase 중: A 및 (>A 즉시 / ≤A 저점 반등) 안내
-    - 아니면 직전 미청산 차수 매수가
-    - 다음이 1차면 기준가 없음
     """
     sym = Ticker.split("/")[0]
-    lines: list[str] = []
 
     if 현재가 <= 0:
         현재가 = 현재가조회(Ticker)
 
-    if 현재가 > 0:
-        lines.append(f"💰 *{sym} 시작 시 현재가*: `{현재가:.6f} USDT`")
-    else:
-        lines.append(f"💰 *{sym} 시작 시 현재가*: `조회 실패`")
+    cur_item = {
+        "price": 현재가 if 현재가 > 0 else None,
+        "text": f"💰 *{sym} 시작 시 현재가*: `{현재가:.6f} USDT`" if 현재가 > 0 else f"💰 *{sym} 시작 시 현재가*: `조회 실패`",
+        "order": 3
+    }
 
     try:
         df = 매매기록불러오기(trade_config[Ticker]["file_name"])
     except Exception as e:
-        lines.append(f"📌 *{sym} 시작 시 기준가*: `엑셀 로드 실패 ({e})`")
-        return "\n".join(lines) + "\n"
+        base_item = {
+            "price": None,
+            "text": f"📌 *{sym} 시작 시 기준가*: `엑셀 로드 실패 ({e})`",
+            "order": 2
+        }
+        items = [cur_item, base_item]
+        items.sort(key=lambda x: (0 if x["price"] is not None and x["price"] > 0 else 1, -(x["price"] or 0), x["order"]))
+        return "\n".join(x["text"] for x in items) + "\n"
 
     미청산 = df[df["매도날짜"].isnull()] if (df is not None and not df.empty) else pd.DataFrame()
-    grid = trade_config[Ticker]["grid_config"]
+    grid = trade_config[Ticker].get("grid_config", GRID_TEMPLATE)
     rebase_A = 쿨링_rebase_앵커조회(Ticker)
 
+    # 1) 다음 매도 목표가 계산 (미청산 포지션 중 가격 상승 시 가장 먼저 도달하는 최우선 매도 목표가)
+    sell_item = None
+    if not 미청산.empty:
+        매도_후보 = []
+        for _, row in 미청산.iterrows():
+            try:
+                c_차수 = int(row["차수"])
+                c_매수가 = float(row["매수가"])
+                c_간격 = float(grid[c_차수]["매도간격"]) if c_차수 in grid else 0.7
+                c_목표가 = c_매수가 * (1 + c_간격 / 100.0)
+                매도_후보.append({
+                    "차수": c_차수,
+                    "매수가": c_매수가,
+                    "간격": c_간격,
+                    "목표가": c_목표가
+                })
+            except Exception:
+                continue
+
+        if 매도_후보:
+            다음_매도 = min(매도_후보, key=lambda x: x["목표가"])
+            sell_item = {
+                "price": 다음_매도["목표가"],
+                "text": f"📈 *{sym} 다음 매도 목표가*: `{다음_매도['목표가']:.6f} USDT` ({다음_매도['차수']}차, {다음_매도['간격']:+.2f}%)",
+                "order": 1
+            }
+
+    # 2) 다음 매수 차수 판별
     다음차수: Optional[int] = None
     for 차수 in sorted(grid.keys()):
         해당_미청산 = 미청산[미청산["차수"] == 차수] if not 미청산.empty else pd.DataFrame()
@@ -1405,53 +1439,93 @@ def 시작시_매수기준_요약(Ticker: str, 현재가: float = 0.0) -> str:
         다음차수 = 차수
         break
 
+    base_item = None
+    buy_item = None
+
     if 다음차수 is None:
         if 미청산.empty:
-            lines.append(f"📌 *{sym} 시작 시 기준가*: `1차 대기 (기준가 없음)`")
+            base_item = {
+                "price": None,
+                "text": f"📌 *{sym} 시작 시 기준가*: `1차 대기 (기준가 없음)`",
+                "order": 2
+            }
         else:
             max_open = int(미청산["차수"].max())
-            lines.append(
-                f"📌 *{sym} 시작 시 기준가*: `다음 매수 없음 (미청산 최대 {max_open}차)`"
-            )
-        return "\n".join(lines) + "\n"
-
-    if 다음차수 == 1:
-        lines.append(f"📌 *{sym} 시작 시 기준가*: `1차 대기 (기준가 없음)`")
+            base_item = {
+                "price": None,
+                "text": f"📌 *{sym} 시작 시 기준가*: `다음 매수 없음 (미청산 최대 {max_open}차)`",
+                "order": 2
+            }
+    elif 다음차수 == 1:
+        base_item = {
+            "price": None,
+            "text": f"📌 *{sym} 시작 시 기준가*: `1차 대기 (기준가 없음)`",
+            "order": 2
+        }
         if 즉시매수허용:
-            lines.append(f"📉 *{sym} 다음 매수*: `1차 즉시매수 가능`")
+            buy_item = {
+                "price": None,
+                "text": f"📉 *{sym} 다음 매수*: `1차 즉시매수 가능`",
+                "order": 4
+            }
         else:
-            lines.append(f"📉 *{sym} 다음 매수*: `1차 RSI≤{RSI_THRESHOLD}`")
-        return "\n".join(lines) + "\n"
+            buy_item = {
+                "price": None,
+                "text": f"📉 *{sym} 다음 매수*: `1차 RSI≤{RSI_THRESHOLD}`",
+                "order": 4
+            }
+    else:
+        간격 = float(grid[다음차수]["매수간격"])
+        bounce = abs(간격)
 
-    간격 = float(grid[다음차수]["매수간격"])
-    bounce = abs(간격)
-
-    if rebase_A is not None:
-        low = 쿨링_rebase_저점조회(Ticker)
-        lines.append(
-            f"📌 *{sym} 시작 시 기준가 A*: `{rebase_A:.6f} USDT` (쿨링 해제가)"
-        )
-        if 현재가 > rebase_A:
-            lines.append(
-                f"📉 *{sym} 다음 매수*: `{다음차수}차 즉시매수 가능` (현재가 > A)"
-            )
+        if rebase_A is not None:
+            low = 쿨링_rebase_저점조회(Ticker)
+            base_item = {
+                "price": float(rebase_A),
+                "text": f"📌 *{sym} 시작 시 기준가 A*: `{rebase_A:.6f} USDT` (쿨링 해제가)",
+                "order": 2
+            }
+            if 현재가 > rebase_A:
+                buy_item = {
+                    "price": None,
+                    "text": f"📉 *{sym} 다음 매수*: `{다음차수}차 즉시매수 가능` (현재가 > A)",
+                    "order": 4
+                }
+            else:
+                반등목표가 = float(low) * (1 + bounce / 100.0)
+                buy_item = {
+                    "price": 반등목표가,
+                    "text": (
+                        f"📉 *{sym} 저점*: `{float(low):.6f}` → "
+                        f"반등 목표가 `{반등목표가:.6f}` ({다음차수}차, +{bounce:.2f}%)"
+                    ),
+                    "order": 4
+                }
         else:
-            반등목표가 = float(low) * (1 + bounce / 100.0)
-            lines.append(
-                f"📉 *{sym} 저점*: `{float(low):.6f}` → "
-                f"반등 목표가 `{반등목표가:.6f}` ({다음차수}차, +{bounce:.2f}%)"
-            )
-        return "\n".join(lines) + "\n"
+            prev_open = 미청산[미청산["차수"] == 다음차수 - 1]
+            기준가 = float(prev_open.iloc[-1]["매수가"])
+            출처 = f"{다음차수 - 1}차 매수가"
+            목표가 = 기준가 * (1 + 간격 / 100.0)
+            base_item = {
+                "price": 기준가,
+                "text": f"📌 *{sym} 시작 시 기준가*: `{기준가:.6f} USDT` ({출처})",
+                "order": 2
+            }
+            buy_item = {
+                "price": 목표가,
+                "text": f"📉 *{sym} 다음 매수 목표가*: `{목표가:.6f} USDT` ({다음차수}차, {간격:+.2f}%)",
+                "order": 4
+            }
 
-    prev_open = 미청산[미청산["차수"] == 다음차수 - 1]
-    기준가 = float(prev_open.iloc[-1]["매수가"])
-    출처 = f"{다음차수 - 1}차 매수가"
-    목표가 = 기준가 * (1 + 간격 / 100.0)
-    lines.append(f"📌 *{sym} 시작 시 기준가*: `{기준가:.6f} USDT` ({출처})")
-    lines.append(
-        f"📉 *{sym} 다음 매수 목표가*: `{목표가:.6f} USDT` ({다음차수}차, {간격:+.2f}%)"
-    )
-    return "\n".join(lines) + "\n"
+    # 3) 내림차순(높은 가격 ➔ 낮은 가격) 정렬
+    items = [item for item in [sell_item, cur_item, base_item, buy_item] if item is not None]
+    items.sort(key=lambda x: (
+        0 if x["price"] is not None and x["price"] > 0 else 1,
+        -(x["price"] or 0.0),
+        x.get("order", 99)
+    ))
+
+    return "\n".join(x["text"] for x in items) + "\n"
 
 def 최근매수횟수(df: pd.DataFrame, window_sec: int) -> int:
     """
