@@ -1222,19 +1222,31 @@ def 쿨링공백복원_실행(
     df = pd.concat([df, new_row], ignore_index=True)
     매매기록저장(df, file_name)
 
-    # 8. 바닥 체결가 바로 위부터 촘촘하게 K개 예약 매수 그물망 배치
+    # 8. 바닥 체결가 바로 위 1차 동적 예약 목표가 산출 (P_prev와 0.7% 미만 근접 시 생략)
     default_amount = float(trade_config[Ticker]["grid_config"].get(1, {}).get("매수금액", 143.0))
+    first_target = round(rebase_px * (1.0 + interval_pct / 100.0), 6)
+    safety_ceiling = P_prev * (1.0 - interval_pct / 100.0) if P_prev > 0 else 0.0
+
     orders = []
-    for i in range(1, K + 1):
-        target_px = rebase_px * (1.0 + (interval_pct * i) / 100.0)
+    remaining_count = 0
+    if P_prev > 0 and first_target >= safety_ceiling:
+        print(
+            f"⚠️ [공백 복원] 첫 예약 목표가({first_target:.4f})가 기준가({P_prev:.4f})와 {interval_pct}% 이내로 근접하여 예약 배치 생략",
+            flush=True
+        )
+    else:
         orders.append({
-            "target_price": round(target_px, 6),
+            "step": 1,
+            "target_price": first_target,
             "amount_usdt": default_amount,
             "created_at": 지금().strftime("%Y-%m-%d %H:%M:%S")
         })
+        remaining_count = K
 
     공백복원_상태저장(Ticker, {
         "orders": orders,
+        "remaining_count": remaining_count,
+        "total_planned": K,
         "last_rebalance": 지금().strftime("%Y-%m-%d %H:%M:%S"),
         "base_price": rebase_px,
         "prev_price": P_prev,
@@ -1245,7 +1257,10 @@ def 쿨링공백복원_실행(
     try:
         title_sym = Ticker.split("/")[0]
         cut_str = ", ".join([f"{lvl}차" for lvl in cut_levels])
-        targets_str = "\n".join([f"   · 예약 {idx+1}: `{ord_item['target_price']:.4f} USDT`" for idx, ord_item in enumerate(orders)])
+        if orders:
+            targets_str = f"   · 1차 동적 예약가: `{first_target:.4f} USDT` (체결 시 실체결가 +{interval_pct}% 자동 재조정 / 총 {K}회 한도)"
+        else:
+            targets_str = "   · 기준가 근접으로 예약 생략 (안전 종료)"
         msg = (
             f"🌪️ *[{title_sym}_쿨링 공백 복원 롤다운 완료]*\n"
             f"━━━━━━━━━━━━━━━\n"
@@ -1255,7 +1270,7 @@ def 쿨링공백복원_실행(
             f"💰 *확정 손실*: `{total_loss:+.4f} USDT`\n"
             f"🔄 *잔여 차수 재배치*: `1차 ~ {M}차` (총 {M}개 승계)\n"
             f"⚓ *바닥 Rebase 체결*: `{rebase_level}차` (`{rebase_px:.4f} USDT`)\n"
-            f"🕸️ *공백 복원 예약 그물망 ({len(orders)}개)*:\n{targets_str}\n"
+            f"🕸️ *공백 복원 동적 예약 ({len(orders)}개 대기)*:\n{targets_str}\n"
             f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
             f"━━━━━━━━━━━━━━━"
         )
@@ -1266,8 +1281,11 @@ def 쿨링공백복원_실행(
 def 공백복원_예약매수_감시(Ticker: str, 현재가: float) -> bool:
     """
     메인 폴링마다 호출되어 공백 예약 매수 목표가 도달을 감시하고,
-    도달 시 시장가 매수를 실행한 뒤 실제 체결가 기준으로 미청산 차수를 동적 재정렬합니다.
-    체결 시 True 리턴.
+    도달 시 시장가 매수를 실행한 뒤:
+    1) 실제 체결가 기준으로 미청산 차수를 동적 재정렬
+    2) 실제 체결가 + interval_pct%로 다음 목표가를 실시간 동적 재조정 (Dynamic Retargeting)
+    3) 다음 목표가가 쿨링 전 최하위 매수가(P_prev)와 interval_pct% 이내로 근접하면 잔여 예약 전량 취소
+    4) 현재가가 P_prev 이상으로 상향 돌파 시 잔여 예약 전량 만료 폐기
     """
     if not GAP_RECONSTRUCTION_ENABLE or 현재가 <= 0:
         return False
@@ -1277,13 +1295,40 @@ def 공백복원_예약매수_감시(Ticker: str, 현재가: float) -> bool:
     if not orders:
         return False
 
-    # 현재가 이상 도달한 주문들 중 가장 먼저 도달한(가장 낮은 목표가) 1개 선택
-    eligible = [o for o in orders if 현재가 >= float(o["target_price"])]
-    if not eligible:
+    P_prev = float(state.get("prev_price", 0.0))
+    grid_cfg = trade_config[Ticker]["grid_config"]
+    interval_pct = abs(float(grid_cfg.get(2, {}).get("매수간격", 0.7)))
+
+    # [보완 1] 현재가가 쿨링 전 최하위 기준가(P_prev) 이상으로 상승 돌파 시 잔여 예약 전량 만료 폐기 (고점 추격 매수 원천 차단)
+    if P_prev > 0 and 현재가 >= P_prev:
+        cleared_count = len(orders)
+        state["orders"] = []
+        state["remaining_count"] = 0
+        공백복원_상태저장(Ticker, state)
+        print(
+            f"🌪️ [공백 복원 예약 만료] {Ticker} 현재가({현재가:.4f})가 기준가({P_prev:.4f}) 상향 돌파 ➔ 잔여 예약 {cleared_count}개 자동 폐기",
+            flush=True
+        )
+        try:
+            title_sym = Ticker.split("/")[0]
+            msg = (
+                f"🌪️ *[{title_sym}_공백 복원 예약 만료]*\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"📊 *종목*: `{Ticker}`\n"
+                f"📈 *현재가*: `{현재가:.4f} USDT` (쿨링 전 기준가 `{P_prev:.4f}` 돌파)\n"
+                f"🗑️ *조치*: 잔여 공백 예약 `{cleared_count}개` 자동 폐기 (고점 추격 매수 차단)\n"
+                f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
+                f"━━━━━━━━━━━━━━━"
+            )
+            telegram_alert.SendMessage(msg)
+        except Exception as e:
+            print(f"⚠️ [공백 복원 만료 텔레그램 발송 실패] {e}", flush=True)
         return False
 
-    eligible.sort(key=lambda x: float(x["target_price"]))
-    target_order = eligible[0]
+    target_order = orders[0]
+    target_price = float(target_order.get("target_price", 0.0))
+    if 현재가 < target_price:
+        return False
 
     amount_usdt = float(target_order.get("amount_usdt", 143.0))
     수량 = USDT금액을_수량으로변환(Ticker, amount_usdt, 현재가)
@@ -1327,17 +1372,51 @@ def 공백복원_예약매수_감시(Ticker: str, 현재가: float) -> bool:
 
     매매기록저장(df, file_name)
 
-    # 상태 파일에서 체결된 주문 제거
-    orders.remove(target_order)
-    state["orders"] = orders
-    공백복원_상태저장(Ticker, state)
-
     # 실제 부여된 차수 번호 조회
     assigned_level = int(df.loc[df[df["매수가"] == 실제체결가].index[-1], "차수"])
 
+    # ── [동적 재조정: Dynamic Retargeting] 실제 체결가 기준으로 다음 목표가 재산출 ──
+    rem_count = int(state.get("remaining_count", 1)) - 1
+    current_step = int(target_order.get("step", 1))
+
+    next_orders = []
+    status_note = ""
+
+    if rem_count > 0:
+        next_target = round(실제체결가 * (1.0 + interval_pct / 100.0), 6)
+        safety_ceiling = P_prev * (1.0 - interval_pct / 100.0) if P_prev > 0 else 0.0
+
+        # 다음 목표가가 쿨링 전 마지막 매수가(P_prev)와 interval_pct% 이내로 좁혀지면 잔여 예약 전량 취소
+        if P_prev > 0 and next_target >= safety_ceiling:
+            status_note = (
+                f"🛑 다음 예약가(`{next_target:.4f}`)가 기준가(`{P_prev:.4f}`)와 "
+                f"`{interval_pct}%` 이내로 근접하여 잔여 예약 `{rem_count}개` 자동 취소 (공백 복원 정상 종료)"
+            )
+            rem_count = 0
+            next_orders = []
+            print(
+                f"🛑 [공백 복원 자동 취소] {Ticker} 다음 목표가({next_target:.4f})가 기준가({P_prev:.4f})에 0.7% 이내 근접 ➔ 잔여 예약 전량 취소",
+                flush=True
+            )
+        else:
+            next_orders = [{
+                "step": current_step + 1,
+                "target_price": next_target,
+                "amount_usdt": amount_usdt,
+                "created_at": 지금().strftime("%Y-%m-%d %H:%M:%S")
+            }]
+            status_note = f"🔜 다음 동적 예약가: `{next_target:.4f} USDT` (+{interval_pct}% 재조정 / 남은 {rem_count}회)"
+    else:
+        status_note = "🏁 계획된 공백 예약 횟수 모두 소진 완료"
+        next_orders = []
+
+    state["orders"] = next_orders
+    state["remaining_count"] = rem_count
+    공백복원_상태저장(Ticker, state)
+
     print(
         f"🎯 [공백 복원 예약 매수 체결] {Ticker} | 차수={assigned_level}차 | 체결가={실제체결가:.4f} USDT "
-        f"(남은 예약 {len(orders)}개)",
+        f"| 슬리피지={매수슬리피지:+.4f}% | {status_note}",
         flush=True
     )
 
@@ -1348,11 +1427,12 @@ def 공백복원_예약매수_감시(Ticker: str, 현재가: float) -> bool:
             f"━━━━━━━━━━━━━━━\n"
             f"📊 *종목*: `{Ticker}`\n"
             f"🔢 *부여 차수*: `{assigned_level}차` (동적 체결가 정렬)\n"
-            f"🎯 *목표 예약가*: `{float(target_order['target_price']):.4f} USDT`\n"
+            f"🎯 *목표 예약가*: `{target_price:.4f} USDT`\n"
             f"💵 *실제 체결가*: `{실제체결가:.4f} USDT`\n"
             f"📐 *슬리피지*: `{매수슬리피지:+.4f}%`\n"
             f"📦 *수량*: `{실제수량}`\n"
             f"💰 *금액*: `{실제금액:.4f} USDT`\n"
+            f"{status_note}\n"
             f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
             f"━━━━━━━━━━━━━━━"
         )
@@ -2644,6 +2724,21 @@ def 매도실행(Ticker: str, 현재가: float) -> bool:
         총수익률합 += 수익률
         청산된_포지션수 += 1
         매도발생 = True
+
+        # [보완 3] 쿨링 전 상위 차수(매수가 >= P_prev) 익절 매도 체결 시 잔여 공백 예약 즉시 클리어
+        try:
+            st = 공백복원_상태로드(Ticker)
+            st_orders = st.get("orders", [])
+            st_prev = float(st.get("prev_price", 0.0))
+            if st_orders and st_prev > 0 and 매수가 >= (st_prev * 0.999):
+                cleared_n = len(st_orders)
+                공백복원_상태클리어(Ticker)
+                print(
+                    f"🎯 [공백 복원 자동 종료] {Ticker} 쿨링 전 상위 {차수}차수(매수가 {매수가:.4f}) 익절 매도 ➔ 잔여 공백 예약 {cleared_n}개 자동 클리어",
+                    flush=True
+                )
+        except Exception as e:
+            print(f"⚠️ [공백 복원 매도 연동 오류] {e}", flush=True)
 
     if 고점갱신됨 and not 매도발생:
         매매기록저장(df, file_name)
