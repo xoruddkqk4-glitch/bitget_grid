@@ -185,7 +185,10 @@ from typing import Dict, Any, Tuple, Optional
 
 import ccxt
 import pandas as pd
-from tendo import singleton
+try:
+    from tendo import singleton
+except ImportError:
+    singleton = None
 
 import telegram_alert  # 사용자 정의 모듈: SendMessage(text: str) 제공
 
@@ -203,11 +206,12 @@ def 지금() -> datetime:
 # ===============================
 # 실수로 실행 명령을 두 번 입력해도, 이미 돌고 있으면 새로 뜬 쪽이 바로 종료됩니다.
 # 봇이 두 개 돌면 같은 종목을 중복 매매하게 되므로 반드시 필요한 안전장치입니다.
-try:
-    me = singleton.SingleInstance()
-except singleton.SingleInstanceException:
-    print("[싱글톤] 이미 실행 중 → 이번 실행은 즉시 종료합니다.")
-    sys.exit(0)
+if singleton is not None:
+    try:
+        me = singleton.SingleInstance()
+    except singleton.SingleInstanceException:
+        print("[싱글톤] 이미 실행 중 → 이번 실행은 즉시 종료합니다.")
+        sys.exit(0)
 
 
 # ===============================
@@ -430,9 +434,10 @@ BUY_COOLDOWN_BUY_COUNT = 5
 BUY_COOLDOWN_PAUSE_SEC = 3600
 
 
-# --- 쿨링 공백 복원 롤다운 그리드 설정 (v2.1) ---
+# --- 쿨링 공백 복원 롤다운 그리드 설정 (v2.4 비상 자가치유 롤다운 탑재) ---
 # 📌 GAP_RECONSTRUCTION_ENABLE = True
-# - True : 쿨링 해제 후 Rebase 첫 매수 체결 시, 직전 차수와의 공백을 계산하여 상위 차수 강제 손절 및 공백 예약 매수 그물망 배치
+# - True : 쿨링 해제 후 Rebase 첫 매수 체결(또는 증거금 고갈 시 비상 선손절) 시,
+#          직전 차수와의 공백을 계산하여 상위 차수 강제 손절 및 공백 예약 매수 그물망 배치
 # - False: 기능 비활성화 (기존 하이브리드 Rebase 방식만 유지)
 GAP_RECONSTRUCTION_ENABLE = True
 
@@ -869,7 +874,8 @@ def 총수익_baseline_부트스트랩(Ticker: str):
 #   activated_at / pending_rebase
 def _쿨링상태_경로(Ticker: str) -> str:
     safe = Ticker.replace('/', '_').replace(':', '_')
-    return f"/var/autobot/bitget_grid/.{safe}_buy_cooldown.json"
+    base_dir = "/var/autobot/bitget_grid" if os.path.exists("/var/autobot/bitget_grid") else "."
+    return os.path.join(base_dir, f".{safe}_buy_cooldown.json")
 
 def 쿨링상태로드(Ticker: str) -> Dict[str, Any]:
     path = _쿨링상태_경로(Ticker)
@@ -895,9 +901,14 @@ def 쿨링상태로드(Ticker: str) -> Dict[str, Any]:
 
 def 쿨링상태저장(Ticker: str, state: Dict[str, Any]):
     try:
-        os.makedirs("/var/autobot/bitget_grid", exist_ok=True)
-        with open(_쿨링상태_경로(Ticker), "w", encoding="utf-8") as f:
+        path = _쿨링상태_경로(Ticker)
+        base_dir = os.path.dirname(path)
+        if base_dir and not os.path.exists(base_dir):
+            os.makedirs(base_dir, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
     except Exception as e:
         print(f"[쿨링상태 저장 실패] {e}")
 
@@ -1065,6 +1076,201 @@ def 공백복원_상태저장(Ticker: str, state: Dict[str, Any]):
 def 공백복원_상태클리어(Ticker: str):
     """공백 예약 주문 상태 초기화 (총수익 청산 / 사이클 리셋 시)"""
     공백복원_상태저장(Ticker, {"orders": [], "last_rebalance": None})
+    잔고부족_트래커_클리어(Ticker)
+
+
+# =========================================================
+# 📌 잔고 부족 가상 매수 시도 트래커 (v2.4 비상 자가치유 롤다운 모듈)
+# =========================================================
+
+def _insufficient_funds_state_path(Ticker: str) -> str:
+    """잔고 부족 매수 시도 상태 파일 경로"""
+    safe = Ticker.replace('/', '_').replace(':', '_')
+    base_dir = "/var/autobot/bitget_grid" if os.path.exists("/var/autobot/bitget_grid") else "."
+    return os.path.join(base_dir, f".{safe}_insufficient_funds.json")
+
+def 잔고부족_상태로드(Ticker: str) -> Dict[str, Any]:
+    """잔고 부족 매수 시도 상태 로드"""
+    path = _insufficient_funds_state_path(Ticker)
+    default: Dict[str, Any] = {"attempts": []}
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or "attempts" not in data:
+            return default
+        return data
+    except Exception as e:
+        print(f"[잔고부족 상태 로드 실패] {e}")
+        return default
+
+def 잔고부족_상태저장(Ticker: str, state: Dict[str, Any]) -> None:
+    """잔고 부족 상태 원자적(Atomic) 저장"""
+    try:
+        path = _insufficient_funds_state_path(Ticker)
+        base_dir = os.path.dirname(path)
+        if base_dir and not os.path.exists(base_dir):
+            os.makedirs(base_dir, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except Exception as e:
+        print(f"[잔고부족 상태 저장 실패] {e}")
+
+def 잔고부족_트래커_클리어(Ticker: str) -> None:
+    """정상 매수 체결 또는 롤다운 완료 시 잔고부족 트래커 초기화"""
+    잔고부족_상태저장(Ticker, {"attempts": []})
+
+def 잔고부족_시도기록(Ticker: str, 차수: int, 현재가: float) -> None:
+    """
+    증거금 부족(InsufficientFunds)으로 매수 실패 시 차수, 시세, 타임스탬프 기록.
+    엑셀 원장을 오염시키지 않고 독립 상태 파일에만 누적.
+    """
+    state = 잔고부족_상태로드(Ticker)
+    now_str = 지금().isoformat()
+    attempts = state.get("attempts", [])
+    cutoff = 지금() - timedelta(hours=24)
+    valid_attempts = []
+    for a in attempts:
+        try:
+            ts = datetime.fromisoformat(a.get("timestamp", ""))
+            if ts.tzinfo is not None:
+                ts = ts.astimezone(KST).replace(tzinfo=None)
+            if ts >= cutoff:
+                valid_attempts.append(a)
+        except Exception:
+            continue
+    valid_attempts.append({
+        "차수": int(차수),
+        "price": float(현재가),
+        "timestamp": now_str
+    })
+    state["attempts"] = valid_attempts
+    잔고부족_상태저장(Ticker, state)
+
+def 잔고부족_최근시도횟수(Ticker: str, window_sec: int = 2400) -> int:
+    """
+    최근 window_sec (기본 2400초 = 40분) 이내에 기록된 고유 차수(unique level) 개수 반환.
+    급락형 파동 판별: 40분 내 서로 다른 차수 5회 이상 발생 시에만 쿨링 발동.
+    """
+    state = 잔고부족_상태로드(Ticker)
+    attempts = state.get("attempts", [])
+    if not attempts:
+        return 0
+    cutoff = 지금() - timedelta(seconds=window_sec)
+    recent_levels = set()
+    for a in attempts:
+        try:
+            ts = datetime.fromisoformat(a.get("timestamp", ""))
+            if ts.tzinfo is not None:
+                ts = ts.astimezone(KST).replace(tzinfo=None)
+            if ts >= cutoff:
+                recent_levels.add(int(a["차수"]))
+        except Exception:
+            continue
+    return len(recent_levels)
+
+def 잔고부족_가상차수_조회(Ticker: str, 차수: int) -> Optional[Dict[str, Any]]:
+    """
+    df에 기록되지 못한 직전 가상 차수(차수 - 1 등)의 시도 기록 조회.
+    최근 6시간 이내 기록된 유효한 시도 중 가장 최신 항목 반환.
+    """
+    state = 잔고부족_상태로드(Ticker)
+    attempts = state.get("attempts", [])
+    cutoff = 지금() - timedelta(hours=6)
+    matched = []
+    for a in attempts:
+        if int(a.get("차수", 0)) == int(차수):
+            try:
+                ts = datetime.fromisoformat(a.get("timestamp", ""))
+                if ts.tzinfo is not None:
+                    ts = ts.astimezone(KST).replace(tzinfo=None)
+                if ts >= cutoff:
+                    matched.append(a)
+            except Exception:
+                continue
+    if matched:
+        return matched[-1]
+    return None
+
+def 잔고부족_최근기록_여부(Ticker: str, 차수: int, cooldown_sec: int = 60) -> bool:
+    """해당 차수가 최근 cooldown_sec 초 이내에 이미 시도된 적이 있는지 여부 (거래소 API 반복 호출 폭주 방지)"""
+    v = 잔고부족_가상차수_조회(Ticker, 차수)
+    if not v:
+        return False
+    try:
+        ts = datetime.fromisoformat(v.get("timestamp", ""))
+        if ts.tzinfo is not None:
+            ts = ts.astimezone(KST).replace(tzinfo=None)
+        if (지금() - ts).total_seconds() < cooldown_sec:
+            return True
+    except Exception:
+        pass
+    return False
+
+def 최근_총매수시도_고유차수수(df: pd.DataFrame, Ticker: str, window_sec: int = 2400) -> int:
+    """
+    최근 window_sec 초 이내에 발생한 '실제 매수 체결 차수'와 '잔고 부족 가상 매수 시도 차수'의
+    고유(unique) 차수 합집합 개수 계산.
+    급락형 파동(40분 내 5개 차수 급락) 감지용.
+    """
+    unique_levels = set()
+    cutoff = 지금() - timedelta(seconds=window_sec)
+
+    # 1) df에서 최근 체결된 차수
+    if df is not None and not df.empty and "매수날짜" in df.columns and "차수" in df.columns:
+        dates = pd.to_datetime(df["매수날짜"], errors="coerce")
+        recent = df.loc[dates >= cutoff]
+        if not recent.empty:
+            for lvl in recent["차수"].dropna():
+                try:
+                    unique_levels.add(int(lvl))
+                except Exception:
+                    pass
+
+    # 2) 잔고부족 가상 시도 차수
+    state = 잔고부족_상태로드(Ticker)
+    for a in state.get("attempts", []):
+        try:
+            ts = datetime.fromisoformat(a.get("timestamp", ""))
+            if ts.tzinfo is not None:
+                ts = ts.astimezone(KST).replace(tzinfo=None)
+            if ts >= cutoff:
+                unique_levels.add(int(a["차수"]))
+        except Exception:
+            pass
+
+    return len(unique_levels)
+
+def 더미매수_텔레그램알림(Ticker: str, 차수: int, 현재가: float, config: Dict[str, Any], 총시도수: int) -> None:
+    """
+    증거금 부족으로 실제 매수가 불가능하여 더미 매수로 기록될 때,
+    차수당 최초 1회 발송되는 텔레그램 안내 메시지.
+    """
+    try:
+        title_symbol = Ticker.split('/')[0]
+        필요금액 = float(config.get("매수금액", 0.0))
+        간격 = config.get("매수간격", "")
+        간격_str = f"직전가 대비 {간격}% 하락 도달" if 간격 else "매수 조건 충족"
+        msg = (
+            f"⚠️ *[{title_symbol}_그리드롱 가상 매수 진입 (더미 기록)]* ⚠️\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"📊 *종목*: `{Ticker}`\n"
+            f"🔢 *가상 차수*: `{차수}차` (더미 기록)\n"
+            f"💵 *진입 시세*: `{현재가:.6f} USDT`\n"
+            f"💰 *필요 금액*: `{필요금액:.2f} USDT` (가용 잔고 부족)\n"
+            f"📉 *하락 조건*: `{간격_str}`\n"
+            f"🔢 *최근 {BUY_COOLDOWN_WINDOW_SEC // 60}분 누적*: `{총시도수} / {BUY_COOLDOWN_BUY_COUNT}개` (5개 도달 시 쿨링)\n"
+            f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
+            f"━━━━━━━━━━━━━━━"
+        )
+        telegram_alert.SendMessage(msg)
+        print(f"📢 [가상 매수 알림 전송] {Ticker} {차수}차 더미 기록 텔레그램 발송 완료", flush=True)
+    except Exception as e:
+        print(f"⚠️ [가상 매수 텔레그램 발송 실패] {e}", flush=True)
+
 
 def 엑셀_스냅샷_백업(Ticker: str, file_name: str) -> str:
     """리밸런싱 직전 타임스탬프 스냅샷 백업 생성 (데이터 무결성 안전장치)"""
@@ -1253,6 +1459,7 @@ def 쿨링공백복원_실행(
         "prev_price": P_prev,
         "gap_pct": round(Gap_pct, 4)
     })
+    잔고부족_트래커_클리어(Ticker)
 
     # 9. 텔레그램 종합 리포트 발송
     try:
@@ -1374,6 +1581,223 @@ def 공백복원_종료_미매도차수_점검(Ticker: str, 사유: str, 현재�
         telegram_alert.SendMessage(msg)
     except Exception as e:
         print(f"⚠️ [미매도 차수 점검 실행 실패] {e}", flush=True)
+
+
+def 비상_증거금확보_쿨링공백복원_실행(
+    Ticker: str,
+    현재가: float,
+    차수: int,
+    config: Dict[str, Any],
+    rebase_mode: str
+) -> bool:
+    """
+    [v2.4 비상 증거금 부족 자가 치유(Self-Healing) 롤다운 실행 함수]
+    - 하이브리드 Rebase 반등 시점에 가용 잔고/증거금이 부족하여 바닥 매수가 불가능한 경우 호출됨.
+    - 1단계: 현재가(P_virtual)를 가상 기준가로 삼아 공백 N 및 필요 손절 개수 K를 사전에 100% 정밀 계산.
+             * N < 2 인 경우 K = 0 (과잉 손절 완벽 차단, 불필요한 실현 손실 방지).
+    - 2단계: K >= 1 인 경우, 상위 K개 물량을 즉시 시장가 선(先) 손절(reduceOnly)하여 증거금 환급 & 유동성 확보.
+    - 3단계: 환급된 현금으로 바닥 Rebase 실제 시장가 매수 체결.
+    - 4단계: 실제 체결가(P_real_fill) 기준으로 첫 동적 예약 매수가(+0.7%) 재산출 및 배치.
+    - 5단계: 잔여 차수 재배치(1~M) 및 텔레그램 종합 알림 발송.
+    """
+    if not GAP_RECONSTRUCTION_ENABLE:
+        return False
+
+    file_name = trade_config[Ticker]["file_name"]
+    df = 매매기록불러오기(file_name)
+    미청산 = df[df["매도날짜"].isnull()].copy()
+
+    if 미청산.empty:
+        print(f"⚠️ [비상 롤다운] {Ticker} 미청산 포지션이 없어 손절 불가", flush=True)
+        return False
+
+    # 1. 쿨링 전 마지막 체결가 P_prev 확인 (미청산 중 가장 낮은 매수가 = 최하위 차수)
+    min_row = 미청산.sort_values(by=["매수가"]).iloc[0]
+    P_prev = float(min_row["매수가"])
+
+    # 가상 바닥 기준가 P_virtual = 현재가
+    P_virtual = float(현재가)
+    if P_prev <= P_virtual:
+        print(f"⚠️ [비상 롤다운] 직전가({P_prev:.4f}) <= 현재가({P_virtual:.4f}): 공백 없음 (손절 취소)", flush=True)
+        return False
+
+    # 2. 공백률 및 공백 차수 수 N 사전 계산
+    Gap_pct = ((P_prev - P_virtual) / P_prev) * 100.0
+    grid_cfg = trade_config[Ticker]["grid_config"]
+    interval_pct = abs(float(grid_cfg.get(2, {}).get("매수간격", 0.7)))
+    N = int(Gap_pct // interval_pct)
+
+    # ⭐ 핵심 원칙: 공백 차수가 2개 미만이면(단순 1칸 하락) 손절 개수 K = 0 (과잉 손절 방지!)
+    if N < 2:
+        print(
+            f"ℹ️ [비상 롤다운 스킵] {Ticker} 공백 {Gap_pct:.2f}% (N={N} < 2, 단순 하락): 과잉 손절 방지를 위해 손절 0개 적용",
+            flush=True
+        )
+        return False
+
+    # 3. 필요 손절 차수 수 K 결정 (최대 캡 적용)
+    K = min(N - 1, MAX_GAP_CUT_LEVELS, len(미청산))
+    if K <= 0:
+        print(f"ℹ️ [비상 롤다운 스킵] 손절 대상 수량 0개 (K={K})", flush=True)
+        return False
+
+    print(
+        f"🚨 [비상 증거금 자가치유 롤다운 개시] {Ticker} | 가상기준가={P_virtual:.4f} | 직전가={P_prev:.4f} "
+        f"| 공백={Gap_pct:.2f}% ({N}개) | 상위 {K}개 선(先) 손절을 통한 증거금 확보 시작",
+        flush=True
+    )
+
+    # 4. 안전장치: 엑셀 자동 스냅샷 백업
+    엑셀_스냅샷_백업(Ticker, file_name)
+
+    # 5. [선(先) 손절] 상위 K개 차수 시장가 강제 손절 (reduceOnly)
+    손절대상 = 미청산.sort_values(by=["매수가"], ascending=False).iloc[:K]
+    cut_indices = list(손절대상.index)
+    cut_levels = list(손절대상["차수"].values)
+    total_cut_qty = float(손절대상["매수수량"].sum())
+
+    sell_px = P_virtual
+    try:
+        sell_res = bitgetX.create_market_sell_order(
+            symbol=Ticker, amount=total_cut_qty, params={"reduceOnly": True}
+        )
+        sell_px, sell_qty, sell_cost = 체결가_조회(
+            Ticker, sell_res, fallback_price=P_virtual, fallback_qty=total_cut_qty
+        )
+    except Exception as e:
+        print(f"⚠️ [비상 롤다운 강제 손절 거래소 주문 실패 - fallback 체결가 적용] {e}", flush=True)
+
+    # 엑셀 손절 마감 처리
+    total_loss = 0.0
+    for c_idx in cut_indices:
+        b_px = float(df.loc[c_idx, "매수가"])
+        b_qty = float(df.loc[c_idx, "매수수량"])
+        b_fee = float(df.loc[c_idx, "수수료"]) if pd.notna(df.loc[c_idx, "수수료"]) else 0.0
+        pnl = (sell_px - b_px) * b_qty - b_fee
+        total_loss += pnl
+        df.loc[c_idx, "매도날짜"] = 지금()
+        df.loc[c_idx, "매도가"] = sell_px
+        df.loc[c_idx, "매도수량"] = b_qty
+        df.loc[c_idx, "매도금액"] = sell_px * b_qty
+        df.loc[c_idx, "실현손익"] = round(pnl, 4)
+        df.loc[c_idx, "수익률"] = round(((sell_px - b_px) / b_px) * 100.0, 4)
+
+    # 손절 후 원장 저장 (손절 확정)
+    매매기록저장(df, file_name)
+    time.sleep(0.5)
+
+    # 6. [후(後) 실체결] 손절로 확보된 가용 현금/증거금으로 바닥 Rebase 실제 시장가 매수
+    수량 = USDT금액을_수량으로변환(Ticker, float(config["매수금액"]), 현재가)
+    if 수량 == 0.0:
+        print(f"🚫 [비상 롤다운] 매수 최소 수량 미만", flush=True)
+        return False
+
+    실제체결가 = float(현재가)
+    실제체결수량 = 수량
+    실제체결금액 = 수량 * 실제체결가
+    매수슬리피지 = 0.0
+
+    try:
+        buy_res = bitgetX.create_market_buy_order(
+            symbol=Ticker, amount=수량, params={"reduceOnly": False}
+        )
+        실제체결가, 실제체결수량, 실제체결금액 = 체결가_조회(
+            Ticker, buy_res, fallback_price=현재가, fallback_qty=수량
+        )
+        매수슬리피지 = 슬리피지_계산(현재가, 실제체결가)
+    except Exception as e:
+        print(f"⚠️ [비상 롤다운 바닥 매수 주문 실패 - fallback 체결가 적용] {e}", flush=True)
+
+    # 7. 잔여 미청산 차수 Re-indexing (높은 매수가 순으로 1, 2... M 차수 부여)
+    잔여 = df[df["매도날짜"].isnull()].copy()
+    잔여_정렬 = 잔여.sort_values(by=["매수가"], ascending=False)
+    M = len(잔여_정렬)
+    for new_level, (r_idx, _) in enumerate(잔여_정렬.iterrows(), start=1):
+        df.loc[r_idx, "차수"] = new_level
+
+    # 8. 바닥 Rebase 체결 차수 번호 확정 (M + K + 1 차수)
+    rebase_level = M + K + 1
+    new_row = pd.DataFrame([{
+        "종목": Ticker,
+        "차수": rebase_level,
+        "매수날짜": 지금(),
+        "매수가": 실제체결가,
+        "매수수량": 실제체결수량,
+        "매수금액": 실제체결금액,
+        "매수시현재가": 현재가,
+        "매수슬리피지%": round(매수슬리피지, 4),
+        "최고수익률": 0.0,
+    }])
+    df = pd.concat([df, new_row], ignore_index=True)
+    매매기록저장(df, file_name)
+
+    # 9. 바닥 실제체결가(P_real_fill) 기준 동적 예약 목표가 산출 (+0.7%)
+    default_amount = float(trade_config[Ticker]["grid_config"].get(1, {}).get("매수금액", 143.0))
+    first_target = round(실제체결가 * (1.0 + interval_pct / 100.0), 6)
+    safety_ceiling = P_prev * (1.0 - interval_pct / 100.0) if P_prev > 0 else 0.0
+
+    orders = []
+    remaining_count = 0
+    if P_prev > 0 and first_target >= safety_ceiling:
+        print(
+            f"⚠️ [비상 롤다운] 첫 예약 목표가({first_target:.4f})가 기준가({P_prev:.4f})와 {interval_pct}% 이내로 근접하여 예약 배치 생략",
+            flush=True
+        )
+    else:
+        orders.append({
+            "step": 1,
+            "target_price": first_target,
+            "amount_usdt": default_amount,
+            "created_at": 지금().strftime("%Y-%m-%d %H:%M:%S")
+        })
+        remaining_count = K
+
+    공백복원_상태저장(Ticker, {
+        "orders": orders,
+        "remaining_count": remaining_count,
+        "total_planned": K,
+        "last_rebalance": 지금().strftime("%Y-%m-%d %H:%M:%S"),
+        "base_price": 실제체결가,
+        "base_level": rebase_level,
+        "prev_price": P_prev,
+        "gap_pct": round(Gap_pct, 4)
+    })
+
+    # 상태 클리어
+    쿨링_rebase_클리어(Ticker)
+    잔고부족_트래커_클리어(Ticker)
+
+    # 10. 텔레그램 종합 리포트 발송
+    try:
+        title_sym = Ticker.split("/")[0]
+        cut_str = ", ".join([f"{lvl}차" for lvl in cut_levels])
+        if orders:
+            targets_str = f"   · 1차 동적 예약가: `{first_target:.4f} USDT` (실체결가 기준 +{interval_pct}% 동적 산출 / 총 {K}회 한도)"
+        else:
+            targets_str = "   · 기준가 근접으로 예약 생략 (안전 종료)"
+        msg = (
+            f"🌪️ *[{title_sym}_비상 자가치유 롤다운 완료]* 🛡️\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"📊 *종목*: `{Ticker}`\n"
+            f"💡 *유형*: 증거금 고갈 비상 자가치유 (선 손절 ➔ 증거금 확보 ➔ Rebase 실체결)\n"
+            f"📉 *공백 발생*: `{Gap_pct:.2f}%` (추정 공백 `{N}개 차수`)\n"
+            f"✂️ *상위 선(先)손절*: `{len(cut_levels)}개` (`{cut_str}`)\n"
+            f"💰 *확정 손실*: `{total_loss:+.4f} USDT`\n"
+            f"🔄 *잔여 차수 재배치*: `1차 ~ {M}차` (총 {M}개 승계)\n"
+            f"⚓ *바닥 Rebase 실체결*: `{rebase_level}차` (`{실제체결가:.4f} USDT`, 슬립 `{매수슬리피지:+.4f}%`)\n"
+            f"🕸️ *공백 복원 동적 예약 ({len(orders)}개 대기)*:\n{targets_str}\n"
+            f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
+            f"━━━━━━━━━━━━━━━"
+        )
+        telegram_alert.SendMessage(msg)
+    except Exception as e:
+        print(f"⚠️ [비상 롤다운 텔레그램 발송 실패] {e}", flush=True)
+
+    if not orders:
+        공백복원_종료_미매도차수_점검(Ticker, 사유="바닥 목표가가 기준가에 근접하여 예약 배치 생략 (안전 종료)", 현재가=실제체결가)
+
+    return True
+
 
 def 공백복원_예약매수_감시(Ticker: str, 현재가: float) -> bool:
     """
@@ -2488,7 +2912,18 @@ def 매수실행(Ticker: str, 현재가: float):
         else:
             prev_open = df[(df["차수"] == 차수 - 1) & (df["매도날짜"].isnull())]
             if prev_open.empty:
+                # 잔고 부족으로 df에 기록되지 못한 직전 가상 차수 시도가 있는지 확인
+                v_prev = 잔고부족_가상차수_조회(Ticker, 차수 - 1)
+                if v_prev is None:
+                    continue
+                기준가 = float(v_prev["price"])
+            else:
+                기준가 = float(prev_open.iloc[-1]["매수가"])
+
+            # 일반 매수 시(rebase_A가 아닐 때), 해당 차수가 최근 60초 내 이미 잔고부족으로 시도되었으면 중복 시도 스킵
+            if rebase_A is None and 잔고부족_최근기록_여부(Ticker, 차수, cooldown_sec=60):
                 continue
+
             if rebase_A is not None:
                 A = float(rebase_A)
                 if 현재가 > A:
@@ -2505,7 +2940,6 @@ def 매수실행(Ticker: str, 현재가: float):
                 if not 가격조건:
                     continue
             else:
-                기준가 = float(prev_open.iloc[-1]["매수가"])
                 target_price = 기준가 * (1 + float(config["매수간격"]) / 100.0)
                 가격조건 = 현재가 <= target_price
                 if not 가격조건:
@@ -2527,6 +2961,22 @@ def 매수실행(Ticker: str, 현재가: float):
         if not 매수트리거:
             continue
 
+        has_open = not df[df["매도날짜"].isnull()].empty
+        used_rebase = (rebase_A is not None) and (차수 > 1 or has_open)
+
+        # Rebase 진입 시 잔고 부족 사전 점검 (자금 고갈 시 비상 선손절 자가치유 롤다운 가동)
+        if used_rebase and GAP_RECONSTRUCTION_ENABLE:
+            free_usdt = 거래소_USDT_잔고조회()
+            buy_cost = float(config["매수금액"])
+            if free_usdt is not None and free_usdt < (buy_cost * 0.9):
+                print(
+                    f"⚠️ [비상 롤다운 감지] 가용 USDT({free_usdt:.2f}) < 매수필요금액({buy_cost:.2f}) "
+                    f"➔ 선(先) 손절 비상 자가치유 롤다운 가동!",
+                    flush=True
+                )
+                if 비상_증거금확보_쿨링공백복원_실행(Ticker, 현재가, 차수, config, rebase_mode):
+                    break
+
         수량 = USDT금액을_수량으로변환(Ticker, float(config["매수금액"]), 현재가)
         if 수량 == 0.0:
             print(f"🚫 매수 미실행: 최소 수량 미만")
@@ -2536,12 +2986,69 @@ def 매수실행(Ticker: str, 현재가: float):
                 symbol=Ticker, amount=수량, params={"reduceOnly": False}
             )
         except ccxt.InsufficientFunds as e:
+            if used_rebase and GAP_RECONSTRUCTION_ENABLE:
+                print(f"⚠️ [Rebase 증거금 부족] 비상 선(先)손절 자가치유 롤다운 가동: {e}", flush=True)
+                if 비상_증거금확보_쿨링공백복원_실행(Ticker, 현재가, 차수, config, rebase_mode):
+                    break
             print(f"⚠️ [증거금/잔고 부족] {Ticker} {차수}차 매수 스킵 (포지션 감시 및 청산 루프는 정상 지속): {e}")
+            is_new_dummy = 잔고부족_가상차수_조회(Ticker, 차수) is None
+            잔고부족_시도기록(Ticker, 차수, 현재가)
+            총시도수 = 최근_총매수시도_고유차수수(df, Ticker, BUY_COOLDOWN_WINDOW_SEC)
+            if is_new_dummy:
+                더미매수_텔레그램알림(Ticker, 차수, 현재가, config, 총시도수)
+            # 오직 40분 내 5회 급락 시에만 발동! (완만 하락형 제외)
+            if BUY_COOLDOWN_ENABLE:
+                if 총시도수 >= BUY_COOLDOWN_BUY_COUNT and not 쿨링여부(Ticker):
+                    쿨링시작(Ticker)
+                    until = 지금() + timedelta(seconds=BUY_COOLDOWN_PAUSE_SEC)
+                    title_symbol = Ticker.split('/')[0]
+                    cool_msg = (
+                        f"🚨 *[{title_symbol}_비상 증거금부족 매수 쿨링 발동]* 🚨\n"
+                        f"━━━━━━━━━━━━━━━\n"
+                        f"📊 *종목*: `{Ticker}`\n"
+                        f"⚠️ *원인*: 증거금 부족 중 급락 연쇄 시도 감지\n"
+                        f"🔢 *최근 {BUY_COOLDOWN_WINDOW_SEC // 60}분 고유차수*: `{총시도수}개` (기준 {BUY_COOLDOWN_BUY_COUNT}개)\n"
+                        f"⏸ *매수 금지*: `{BUY_COOLDOWN_PAUSE_SEC // 60}분` (~{until.strftime('%H:%M:%S')})\n"
+                        f"✅ *매도*: 계속 동작\n"
+                        f"📌 *재개 시*: 비상 자가치유 롤다운 (가상 계산 ➔ 상위 손절 ➔ 증거금 확보 ➔ Rebase 실체결)\n"
+                        f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
+                        f"━━━━━━━━━━━━━━━"
+                    )
+                    telegram_alert.SendMessage(cool_msg)
+                    print(f"🚨 비상 쿨링 발동 - {Ticker} 잔고부족 급락 40분 내 {총시도수}회 시도 감지", flush=True)
             return  # 해당 폴링 매수만 스킵하고 메인 감시 루프는 정상 유지
         except ccxt.ExchangeError as e:
             err_msg = str(e).lower()
             if any(k in err_msg for k in ["insufficient", "margin", "balance"]):
+                if used_rebase and GAP_RECONSTRUCTION_ENABLE:
+                    print(f"⚠️ [Rebase 거래소 잔고 부족] 비상 선(先)손절 자가치유 롤다운 가동: {e}", flush=True)
+                    if 비상_증거금확보_쿨링공백복원_실행(Ticker, 현재가, 차수, config, rebase_mode):
+                        break
                 print(f"⚠️ [거래소 잔고 부족] {Ticker} {차수}차 매수 스킵 (감시 루프 지속): {e}")
+                is_new_dummy = 잔고부족_가상차수_조회(Ticker, 차수) is None
+                잔고부족_시도기록(Ticker, 차수, 현재가)
+                총시도수 = 최근_총매수시도_고유차수수(df, Ticker, BUY_COOLDOWN_WINDOW_SEC)
+                if is_new_dummy:
+                    더미매수_텔레그램알림(Ticker, 차수, 현재가, config, 총시도수)
+                if BUY_COOLDOWN_ENABLE:
+                    if 총시도수 >= BUY_COOLDOWN_BUY_COUNT and not 쿨링여부(Ticker):
+                        쿨링시작(Ticker)
+                        until = 지금() + timedelta(seconds=BUY_COOLDOWN_PAUSE_SEC)
+                        title_symbol = Ticker.split('/')[0]
+                        cool_msg = (
+                            f"🚨 *[{title_symbol}_비상 증거금부족 매수 쿨링 발동]* 🚨\n"
+                            f"━━━━━━━━━━━━━━━\n"
+                            f"📊 *종목*: `{Ticker}`\n"
+                            f"⚠️ *원인*: 증거금 부족 중 급락 연쇄 시도 감지\n"
+                            f"🔢 *최근 {BUY_COOLDOWN_WINDOW_SEC // 60}분 고유차수*: `{총시도수}개` (기준 {BUY_COOLDOWN_BUY_COUNT}개)\n"
+                            f"⏸ *매수 금지*: `{BUY_COOLDOWN_PAUSE_SEC // 60}분` (~{until.strftime('%H:%M:%S')})\n"
+                            f"✅ *매도*: 계속 동작\n"
+                            f"📌 *재개 시*: 비상 자가치유 롤다운 (가상 계산 ➔ 상위 손절 ➔ 증거금 확보 ➔ Rebase 실체결)\n"
+                            f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
+                            f"━━━━━━━━━━━━━━━"
+                        )
+                        telegram_alert.SendMessage(cool_msg)
+                        print(f"🚨 비상 쿨링 발동 - {Ticker} 잔고부족 급락 40분 내 {총시도수}회 시도 감지", flush=True)
                 return
             print(f"[매수 거래소 오류] {e}")
             continue
@@ -2553,9 +3060,9 @@ def 매수실행(Ticker: str, 현재가: float):
             Ticker, order_result, fallback_price=현재가, fallback_qty=수량
         )
         매수슬리피지 = 슬리피지_계산(현재가, 실제체결가)
+        잔고부족_트래커_클리어(Ticker)
 
         # rebase로 진입했으면 앵커/저점 제거 → 이후 차수는 직전 체결가 기준
-        used_rebase = rebase_A is not None and 차수 > 1
         if used_rebase:
             쿨링_rebase_클리어(Ticker)
             rebase_A = None
@@ -2643,7 +3150,7 @@ def 매수실행(Ticker: str, 현재가: float):
 
         # 급락 연쇄 매수 쿨링 체크 (여기 도달 시 쿨링 중이 아님)
         if BUY_COOLDOWN_ENABLE:
-            횟수 = 최근매수횟수(df, BUY_COOLDOWN_WINDOW_SEC)
+            횟수 = 최근_총매수시도_고유차수수(df, Ticker, BUY_COOLDOWN_WINDOW_SEC)
             if 횟수 >= BUY_COOLDOWN_BUY_COUNT:
                 쿨링시작(Ticker)
                 until = 지금() + timedelta(seconds=BUY_COOLDOWN_PAUSE_SEC)
@@ -3528,7 +4035,7 @@ def main_loop():
             if BUY_COOLDOWN_ENABLE else "🧊 쿨링: `비활성`\n"
         )
         gap_line = (
-            f"🌪️ 공백 복원: `활성` (최대 {MAX_GAP_CUT_LEVELS}개 손절 캡 + 바닥 {MAX_GAP_CUT_LEVELS}개 그물망)\n"
+            f"🌪️ 공백 복원: `활성 (v2.4 비상 자가치유 롤다운)` (최대 {MAX_GAP_CUT_LEVELS}개 손절 캡 + 바닥 {MAX_GAP_CUT_LEVELS}개 그물망)\n"
             if GAP_RECONSTRUCTION_ENABLE else "🌪️ 공백 복원: `비활성`\n"
         )
         price_lines = ""
