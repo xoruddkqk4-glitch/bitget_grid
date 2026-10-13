@@ -344,7 +344,7 @@
   - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
   - 결번 압축 재정렬 및 역순 차수 배정 시뮬레이션 단위 테스트 100% 정상 통과
 
-## [2026-10-13 13:00] 업데이트 이력 (Commit ID: PENDING / 쿨링 공백 복원 v2.4 비상 증거금 자가치유 롤다운 및 더미 매수 알림 구현 완료)
+## [2026-10-13 13:00] 업데이트 이력 (Commit ID: e709aa4 / 쿨링 공백 복원 v2.4 비상 증거금 자가치유 롤다운 및 더미 매수 알림 구현 완료)
 - **수정 내용**:
   - **1) 비상 증거금 부족 자가 치유(Self-Healing) 롤다운 전략 구현 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
     - **자금 고갈 고립 해결**: 급락장에서 고차수 소진으로 가용 USDT가 고갈(`InsufficientFunds`)되어 봇이 멈추고 쿨링/Rebase/손절이 불가능하던 치명적 한계 극복
