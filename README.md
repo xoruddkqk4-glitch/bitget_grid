@@ -319,7 +319,7 @@
 - **검증 결과**:
   - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
 
-## [2026-10-13 10:34] 업데이트 이력 (Commit ID: 2af4ed6 / 쿨링 공백 복원 v2.3 역순 차수 배정, 단일 알림 및 미매도 차수 점검 로직 구현 완료)
+## [2026-10-13 10:34] 업데이트 이력 (Commit ID: e8ff2cb / 쿨링 공백 복원 v2.3 역순 차수 배정, 단일 알림 및 미매도 차수 점검 로직 구현 완료)
 - **수정 내용**:
   - **1) 바닥 Rebase 기준 역순(-1씩) 차수 배정 및 기존 차수 보존 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
     - 예약 매수 체결 시마다 미청산 전체를 `enumerate`로 덮어써서 바닥 25차 번호가 16차, 17차로 밀려나던 버그 완전 제거
