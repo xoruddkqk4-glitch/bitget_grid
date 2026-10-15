@@ -366,7 +366,7 @@
   - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
   - 가상 시도 기록/조회/클리어 및 차수별 1회 알림 분기 단위 테스트 100% 통과
 
-## [2026-10-15 09:43] 업데이트 이력 (Commit ID: PENDING / 트레일링 매도 전략 검증 및 설정 활성화)
+## [2026-10-15 09:43] 업데이트 이력 (Commit ID: 21fe4b5 / 트레일링 매도 전략 검증 및 설정 활성화)
 - **수정 내용**:
   - **1) 2단계 하이브리드 트레일링 스탑 전략 검증 및 활성화 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
     - `TRAILING_ENABLE = True` 활성화 확인 및 적용
