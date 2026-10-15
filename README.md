@@ -380,7 +380,7 @@
   - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
   - 트레일링 설정값 및 분기 조건 정밀 분석 완료
 
-## [2026-10-15 22:58] 업데이트 이력 (Commit ID: pending / 쿨링 공백 복원 v2.5 상단 예약 복원 & 하단 더미 매수 무단절 하이브리드 파이프라인)
+## [2026-10-15 22:58] 업데이트 이력 (Commit ID: 51bfc05 / 쿨링 공백 복원 v2.5 상단 예약 복원 & 하단 더미 매수 무단절 하이브리드 파이프라인)
 - **수정 내용**:
   - **1) 상단 공백 락 정밀화 및 하향 차수 전면 개방 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
     - 기존 `has_pending_gap_orders and 차수 <= gap_base_level(45)` 조건으로 인해 현재 보유 차수(43차) 아래의 하락 매수 구간(44차, 45차 등)까지 과잉 차단되던 락 현상 완전 해소
