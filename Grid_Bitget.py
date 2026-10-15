@@ -1456,6 +1456,7 @@ def 쿨링공백복원_실행(
         "last_rebalance": 지금().strftime("%Y-%m-%d %H:%M:%S"),
         "base_price": rebase_px,
         "base_level": rebase_level,
+        "top_ceiling": M,
         "prev_price": P_prev,
         "gap_pct": round(Gap_pct, 4)
     })
@@ -1759,6 +1760,7 @@ def 비상_증거금확보_쿨링공백복원_실행(
         "last_rebalance": 지금().strftime("%Y-%m-%d %H:%M:%S"),
         "base_price": 실제체결가,
         "base_level": rebase_level,
+        "top_ceiling": M,
         "prev_price": P_prev,
         "gap_pct": round(Gap_pct, 4)
     })
@@ -2032,6 +2034,11 @@ def 시작시_매수기준_요약(Ticker: str, 현재가: float = 0.0) -> str:
 
     # 2) 다음 매수 차수 판별
     다음차수: Optional[int] = None
+    open_lvls_init = 미청산["차수"] if not 미청산.empty else pd.Series(dtype=int)
+    max_open_lvl_init = int(open_lvls_init.max()) if not open_lvls_init.empty else 0
+    gap_state_init = 공백복원_상태로드(Ticker) if GAP_RECONSTRUCTION_ENABLE else {}
+    has_gap_orders_init = bool(gap_state_init.get("orders", []))
+
     for 차수 in sorted(grid.keys()):
         해당_미청산 = 미청산[미청산["차수"] == 차수] if not 미청산.empty else pd.DataFrame()
         if not 해당_미청산.empty:
@@ -2039,9 +2046,14 @@ def 시작시_매수기준_요약(Ticker: str, 현재가: float = 0.0) -> str:
         if 차수 == 1:
             다음차수 = 1
             break
+        # 공백 복원 예약 대기 중이면 상단 미복원 공백 차수는 건너뛰고 하향 차수에서 다음 차수 탐색
+        if has_gap_orders_init and max_open_lvl_init > 0 and 차수 < max_open_lvl_init:
+            continue
         prev_open = 미청산[미청산["차수"] == 차수 - 1] if not 미청산.empty else pd.DataFrame()
         if prev_open.empty:
-            break
+            v_prev = 잔고부족_가상차수_조회(Ticker, 차수 - 1)
+            if v_prev is None:
+                break
         다음차수 = 차수
         break
 
@@ -2108,9 +2120,14 @@ def 시작시_매수기준_요약(Ticker: str, 현재가: float = 0.0) -> str:
                     "order": 4
                 }
         else:
-            prev_open = 미청산[미청산["차수"] == 다음차수 - 1]
-            기준가 = float(prev_open.iloc[-1]["매수가"])
-            출처 = f"{다음차수 - 1}차 매수가"
+            prev_open = 미청산[미청산["차수"] == 다음차수 - 1] if not 미청산.empty else pd.DataFrame()
+            if not prev_open.empty:
+                기준가 = float(prev_open.iloc[-1]["매수가"])
+                출처 = f"{다음차수 - 1}차 매수가"
+            else:
+                v_prev = 잔고부족_가상차수_조회(Ticker, 다음차수 - 1)
+                기준가 = float(v_prev["price"]) if v_prev else 0.0
+                출처 = f"{다음차수 - 1}차 가상기준가"
             목표가 = 기준가 * (1 + 간격 / 100.0)
             base_item = {
                 "price": 기준가,
@@ -2888,12 +2905,16 @@ def 매수실행(Ticker: str, 현재가: float):
     rebase_A = 쿨링_rebase_앵커조회(Ticker)
     rebase_mode = ""
 
+    open_levels = df[df["매도날짜"].isnull()]["차수"] if (df is not None and not df.empty and "매도날짜" in df.columns) else pd.Series(dtype=int)
+    max_open_level = int(open_levels.max()) if not open_levels.empty else 0
+
     for 차수, config in trade_config[Ticker]["grid_config"].items():
         if not df[(df["차수"] == 차수) & (df["매도날짜"].isnull())].empty:
             continue
 
-        # 공백 복원 예약이 대기 중일 때, 바닥 Rebase 차수 이하의 미보유 공백 차수는 일반 매수 차단
-        if has_pending_gap_orders and gap_base_level > 0 and 차수 <= gap_base_level:
+        # 공백 복원 예약이 대기 중일 때, 상단 미복원 공백 차수(현재 열려있는 최하단 차수보다 작은 미보유 차수)는 일반 하향 매수 차단
+        # 단, 현재 열려있는 최하단 차수보다 큰 하향 차수(차수 > max_open_level)는 정상적인 하락 매수/더미 매수 진행
+        if has_pending_gap_orders and max_open_level > 0 and 차수 < max_open_level:
             continue
 
         if 차수 == 1:
@@ -2992,7 +3013,8 @@ def 매수실행(Ticker: str, 현재가: float):
                     break
             print(f"⚠️ [증거금/잔고 부족] {Ticker} {차수}차 매수 스킵 (포지션 감시 및 청산 루프는 정상 지속): {e}")
             is_new_dummy = 잔고부족_가상차수_조회(Ticker, 차수) is None
-            잔고부족_시도기록(Ticker, 차수, 현재가)
+            dummy_ref_price = target_price if 차수 > 1 and "target_price" in locals() else 현재가
+            잔고부족_시도기록(Ticker, 차수, dummy_ref_price)
             총시도수 = 최근_총매수시도_고유차수수(df, Ticker, BUY_COOLDOWN_WINDOW_SEC)
             if is_new_dummy:
                 더미매수_텔레그램알림(Ticker, 차수, 현재가, config, 총시도수)
@@ -3026,7 +3048,8 @@ def 매수실행(Ticker: str, 현재가: float):
                         break
                 print(f"⚠️ [거래소 잔고 부족] {Ticker} {차수}차 매수 스킵 (감시 루프 지속): {e}")
                 is_new_dummy = 잔고부족_가상차수_조회(Ticker, 차수) is None
-                잔고부족_시도기록(Ticker, 차수, 현재가)
+                dummy_ref_price = target_price if 차수 > 1 and "target_price" in locals() else 현재가
+                잔고부족_시도기록(Ticker, 차수, dummy_ref_price)
                 총시도수 = 최근_총매수시도_고유차수수(df, Ticker, BUY_COOLDOWN_WINDOW_SEC)
                 if is_new_dummy:
                     더미매수_텔레그램알림(Ticker, 차수, 현재가, config, 총시도수)
