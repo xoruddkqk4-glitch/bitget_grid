@@ -396,7 +396,7 @@ MA_4H_CACHE_SECONDS = 15    # 4시간봉 캐시 15초
 #          1단계: +TRAIL_STAGE1_PCT 도달 후 하회 시 최소 이익 보존 매도
 #          2단계: +TRAIL_STAGE2_PCT 도달 후 고점 대비 -TRAIL_DISTANCE_PCT 하락 시 매도
 # - False: GRID_TEMPLATE 매도간격 고정 목표가 매도 (기존 방식)
-TRAILING_ENABLE = False
+TRAILING_ENABLE = True
 
 # 📌 TRAIL_STAGE1_PCT = 0.7
 # - 1차 트리거(최소 이익 보존선, %): +0.7% 도달 후 0.7% 이하로 내려가면 익절
