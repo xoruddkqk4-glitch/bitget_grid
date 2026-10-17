@@ -578,7 +578,8 @@ COLUMNS = [
     "최고수익률",
     "매도날짜", "매도가", "매도수량", "매도금액",
     "매도시현재가", "매도슬리피지%",
-    "수수료", "실현손익", "수익률", "누적실현손익"
+    "수수료", "실현손익", "수익률", "누적실현손익",
+    "청산유형",
 ]
 
 
@@ -1404,6 +1405,7 @@ def 쿨링공백복원_실행(
         df.loc[c_idx, "매도금액"] = sell_px * b_qty
         df.loc[c_idx, "실현손익"] = round(pnl, 4)
         df.loc[c_idx, "수익률"] = round(((sell_px - b_px) / b_px) * 100.0, 4)
+        df.loc[c_idx, "청산유형"] = "공백복원손절"
 
     # 6. 잔여 미청산 차수 Re-indexing (높은 매수가 순으로 1, 2... M 차수 부여)
     잔여 = df[df["매도날짜"].isnull()].copy()
@@ -1682,6 +1684,7 @@ def 비상_증거금확보_쿨링공백복원_실행(
         df.loc[c_idx, "매도금액"] = sell_px * b_qty
         df.loc[c_idx, "실현손익"] = round(pnl, 4)
         df.loc[c_idx, "수익률"] = round(((sell_px - b_px) / b_px) * 100.0, 4)
+        df.loc[c_idx, "청산유형"] = "공백복원손절"
 
     # 손절 후 원장 저장 (손절 확정)
     매매기록저장(df, file_name)
@@ -2585,6 +2588,7 @@ def 총수익_체크_및_청산(Ticker: str, 현재가: float) -> bool:
             df.at[idx, "실현손익"] = 실현손익
             df.at[idx, "수익률"] = 수익률
             df.at[idx, "누적실현손익"] = 현재누적
+            df.at[idx, "청산유형"] = "전체청산"
 
             print(
                 f"💸 [전체청산] {Ticker} 차수 {차수} | "
@@ -3307,6 +3311,7 @@ def 매도실행(Ticker: str, 현재가: float) -> bool:
         df.at[idx, "실현손익"] = 실현손익
         df.at[idx, "수익률"] = 수익률
         df.at[idx, "누적실현손익"] = 현재누적손익
+        df.at[idx, "청산유형"] = "그리드익절"
         매매기록저장(df, file_name)
 
         if TRAILING_ENABLE:
@@ -3409,6 +3414,7 @@ SETTLEMENT_HOUR_KST = 9          # KST 09:00 기준으로 하루를 끊는다
 SETTLEMENT_COLUMNS = [
     "정산일", "매수건수", "매수수량", "매수금액(USDT)",
     "매도건수", "매도수량", "매도금액(USDT)",
+    "그리드익절(USDT)", "공백손절(USDT)",
     "수수료(USDT)", "실현수익(USDT)", "누적수익(USDT)",
 ]
 
@@ -3425,6 +3431,10 @@ def _정산_데이터_집계(df: pd.DataFrame, start_dt: datetime, end_dt: datet
     empty_res = {
         "매수건수": 0, "매수수량": 0.0, "매수금액": 0.0,
         "매도건수": 0, "매도수량": 0.0, "매도금액": 0.0,
+        "그리드건수": 0, "그리드수량": 0.0, "그리드금액": 0.0,
+        "그리드수익": 0.0, "그리드수수료": 0.0,
+        "공백손절건수": 0, "공백손절수량": 0.0, "공백손절금액": 0.0,
+        "공백실현손실": 0.0, "공백수수료": 0.0,
         "수수료": 0.0, "실현수익": 0.0,
         "거래일수": 0, "거래일목록": set(),
     }
@@ -3451,12 +3461,36 @@ def _정산_데이터_집계(df: pd.DataFrame, start_dt: datetime, end_dt: datet
     def _sum(d, col):
         return round(float(pd.to_numeric(d.get(col), errors="coerce").fillna(0).sum()), 6)
 
+    # 🟢 순수 그리드 익절 vs 🔴 공백복원 손절 분리
+    # - 청산유형 컬럼이 명시되어 있으면 우선 참조
+    # - 과거 데이터이거나 결측치인 경우: 실현손익 < 0 이면 공백복원손절, >= 0 이면 그리드익절
+    pnl_series = pd.to_numeric(sell_df.get("실현손익"), errors="coerce").fillna(0.0)
+    if "청산유형" in sell_df.columns:
+        type_series = sell_df["청산유형"].astype(str)
+        is_gap_cut = (type_series == "공백복원손절") | (sell_df["청산유형"].isna() & (pnl_series < 0))
+    else:
+        is_gap_cut = pnl_series < 0
+
+    grid_df = sell_df[~is_gap_cut]
+    gap_df = sell_df[is_gap_cut]
+
+    grid_pnl = _sum(grid_df, "실현손익")
+    gap_pnl = _sum(gap_df, "실현손익")
+    tot_pnl = _sum(sell_df, "실현손익")
+    tot_fee = _sum(sell_df, "수수료")
+
     return {
         "매수건수": int(len(buy_df)), "매수수량": _sum(buy_df, "매수수량"),
         "매수금액": _sum(buy_df, "매수금액"),
         "매도건수": int(len(sell_df)), "매도수량": _sum(sell_df, "매도수량"),
         "매도금액": _sum(sell_df, "매도금액"),
-        "수수료": _sum(sell_df, "수수료"), "실현수익": _sum(sell_df, "실현손익"),
+        "그리드건수": int(len(grid_df)), "그리드수량": _sum(grid_df, "매도수량"),
+        "그리드금액": _sum(grid_df, "매도금액"), "그리드수익": grid_pnl,
+        "그리드수수료": _sum(grid_df, "수수료"),
+        "공백손절건수": int(len(gap_df)), "공백손절수량": _sum(gap_df, "매도수량"),
+        "공백손절금액": _sum(gap_df, "매도금액"), "공백실현손실": gap_pnl,
+        "공백수수료": _sum(gap_df, "수수료"),
+        "수수료": tot_fee, "실현수익": tot_pnl,
         "거래일수": trading_days, "거래일목록": trade_dates,
     }
 
@@ -3481,20 +3515,32 @@ def _정산_시트갱신(file_path: str, 정산일: str, st: dict) -> float:
         ws.append(SETTLEMENT_COLUMNS)
     ws = wb[SETTLEMENT_SHEET]
 
+    # 기존 시트 헤더 확인 및 갱신 (신규 컬럼 반영)
+    existing_headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
+    if existing_headers != SETTLEMENT_COLUMNS:
+        for c, col_name in enumerate(SETTLEMENT_COLUMNS, start=1):
+            ws.cell(row=1, column=c, value=col_name)
+
+    cum_col_idx = SETTLEMENT_COLUMNS.index("누적수익(USDT)") + 1
     target_row, prev_cum = None, 0.0
     for r in range(2, ws.max_row + 1):
-        if ws.cell(row=r, column=1).value == 정산일:
+        if str(ws.cell(row=r, column=1).value) == 정산일:
             target_row = r
             break
         try:
-            prev_cum = float(ws.cell(row=r, column=10).value or 0.0)
+            val = ws.cell(row=r, column=cum_col_idx).value
+            if val is not None:
+                prev_cum = float(val)
         except Exception:
             pass
 
     cum = round(prev_cum + st["실현수익"], 6)
-    row = [정산일, st["매수건수"], st["매수수량"], st["매수금액"],
-           st["매도건수"], st["매도수량"], st["매도금액"],
-           st["수수료"], st["실현수익"], cum]
+    row = [
+        정산일, st["매수건수"], st["매수수량"], st["매수금액"],
+        st["매도건수"], st["매도수량"], st["매도금액"],
+        st.get("그리드수익", 0.0), st.get("공백실현손실", 0.0),
+        st["수수료"], st["실현수익"], cum
+    ]
     if target_row:
         for i, v in enumerate(row, start=1):
             ws.cell(row=target_row, column=i, value=v)
@@ -3546,38 +3592,50 @@ def _포맷_일일_정산_섹션(
 ) -> list:
     """
     일일 정산(최근 3일: 1일전, 2일전, 3일전) 전용 포맷터.
-    📌 종목명
-      매수 N건 | 수량 N | N USDT
-      매도 N건 | 수량 N | N USDT
-      [1일전(YYYY-MM-DD)] 실현수익 +N USDT | 매도 1회 평균: +N USDT | 수수료 N USDT
-      [2일전(YYYY-MM-DD)] 실현수익 +N USDT | 매도 1회 평균: +N USDT | 수수료 N USDT
-      [3일전(YYYY-MM-DD)] 실현수익 +N USDT | 매도 1회 평균: +N USDT | 수수료 N USDT
+    - 순실현 손익과 함께 🟢 순수 그리드 익절과 🔴 공백복원 손절을 분리 표시.
     """
     sec = ["━━━━━━━━━━━━━━━", title]
 
     d2_map = {item[0]: item[1] for item in day2_items}
     d3_map = {item[0]: item[1] for item in day3_items}
 
-    def _line(tag, dt_str, st):
+    empty_stat = {
+        "실현수익": 0.0, "매도건수": 0, "수수료": 0.0,
+        "그리드건수": 0, "그리드수익": 0.0, "공백손절건수": 0, "공백실현손실": 0.0
+    }
+
+    def _day_block(tag, dt_str, st):
         p = "+" if st["실현수익"] >= 0 else ""
-        c = st.get("매도건수", 0)
-        avg = (st["실현수익"] / c) if c > 0 else 0.0
-        avg_p = "+" if avg >= 0 else ""
-        return f"  [{tag}({dt_str})] 실현수익 {p}{st['실현수익']:,.4f} USDT | 매도 1회 평균: {avg_p}{avg:,.4f} USDT | 수수료 {st['수수료']:,.4f} USDT"
+        lines = [
+            f"  [{tag}({dt_str})] 순실현 {p}{st['실현수익']:,.4f} USDT (수수료 {st['수수료']:,.4f} USDT)"
+        ]
+        g_cnt = st.get("그리드건수", 0)
+        g_profit = st.get("그리드수익", 0.0)
+        g_avg = (g_profit / g_cnt) if g_cnt > 0 else 0.0
+        g_p = "+" if g_profit >= 0 else ""
+        lines.append(f"    • 🟢 순수 그리드 익절: {g_p}{g_profit:,.4f} USDT ({g_cnt}건 | 건당 +{g_avg:,.4f} USDT)")
+
+        c_cnt = st.get("공백손절건수", 0)
+        c_loss = st.get("공백실현손실", 0.0)
+        if c_cnt > 0:
+            lines.append(f"    • 🔴 공백복원 손절:   {c_loss:,.4f} USDT ({c_cnt}건)")
+        else:
+            lines.append(f"    • ⚪ 공백복원 손절:   0.0000 USDT (0건)")
+        return lines
 
     for name, st1, _ in daily_items:
-        st2 = d2_map.get(name) or {"실현수익": 0.0, "매도건수": 0, "수수료": 0.0}
-        st3 = d3_map.get(name) or {"실현수익": 0.0, "매도건수": 0, "수수료": 0.0}
+        st2 = d2_map.get(name) or empty_stat
+        st3 = d3_map.get(name) or empty_stat
 
         sec += [
             f"📌 {name}",
             f"  매수 {st1['매수건수']}건 | 수량 {st1['매수수량']:g} | {st1['매수금액']:,.2f} USDT",
             f"  매도 {st1['매도건수']}건 | 수량 {st1['매도수량']:g} | {st1['매도금액']:,.2f} USDT",
-            _line("1일전", date_1d, st1),
-            _line("2일전", date_2d, st2),
-            _line("3일전", date_3d, st3),
-            "",
         ]
+        sec += _day_block("1일전", date_1d, st1)
+        sec += _day_block("2일전", date_2d, st2)
+        sec += _day_block("3일전", date_3d, st3)
+        sec.append("")
 
     # 다중 종목일 경우 합계 블록
     if len(daily_items) > 1:
@@ -3585,11 +3643,11 @@ def _포맷_일일_정산_섹션(
             "📊 합계",
             f"  매수 {tot_daily['매수건수']}건 / {tot_daily['매수수량']:g} / {tot_daily['매수금액']:,.2f} USDT",
             f"  매도 {tot_daily['매도건수']}건 / {tot_daily['매도수량']:g} / {tot_daily['매도금액']:,.2f} USDT",
-            _line("1일전", date_1d, tot_daily),
-            _line("2일전", date_2d, tot_day2),
-            _line("3일전", date_3d, tot_day3),
-            "",
         ]
+        sec += _day_block("1일전", date_1d, tot_daily)
+        sec += _day_block("2일전", date_2d, tot_day2)
+        sec += _day_block("3일전", date_3d, tot_day3)
+        sec.append("")
 
     return sec
 
@@ -3671,21 +3729,32 @@ def 현재_롱포지션_현황_조회(Ticker: str) -> Optional[dict]:
 def _포맷_포지션_현황_섹션() -> list:
     """
     일일 정산 메시지용 통합 롱 포지션 현황 섹션 (거래소 앱 Positions 탭 정보 포맷팅).
-    '현재 보유금 현황' 바로 위에 배치됨.
+    미청산 차수들의 미실현 손익(Unrealized PnL) 및 ROE 표기.
     """
-    sec = ["━━━━━━━━━━━━━━━"]
+    sec = ["━━━━━━━━━━━━━━━", "5️⃣ [현재 포지션 및 미실현 손익]"]
     for ticker in 종목코드목록:
         name = ticker.split("/")[0]
+        open_levels_cnt = 0
+        try:
+            cfg = trade_config.get(ticker) or {}
+            fp = cfg.get("file_name")
+            if fp and os.path.exists(fp):
+                _df = pd.read_excel(fp, engine="openpyxl", sheet_name=0)
+                open_levels_cnt = int(len(_df[_df["매도날짜"].isnull()]))
+        except Exception:
+            pass
+
         pos = 현재_롱포지션_현황_조회(ticker)
+        open_info = f" (미청산 {open_levels_cnt}개 차수 보유)" if open_levels_cnt > 0 else ""
         if pos is None:
             sec += [
-                f"📈 [현재 포지션 현황 ({name})]",
+                f"📈 {name}{open_info}",
                 f"  • 포지션: 조회 실패 (거래소 API 확인 필요)",
                 "",
             ]
         elif pos.get("contracts", 0.0) <= 0:
             sec += [
-                f"📈 [현재 포지션 현황 ({name})]",
+                f"📈 {name}",
                 f"  • 포지션: 보유 포지션 없음 (0.0 USDT)",
                 "",
             ]
@@ -3695,11 +3764,10 @@ def _포맷_포지션_현황_섹션() -> list:
             roe = pos["percentage"]
             roe_p = "+" if roe >= 0 else ""
             sec += [
-                f"📈 [현재 포지션 현황 ({name})]",
-                f"  • 포지션: {pos['side']} {pos['leverage']}x ({pos['marginMode']} USDT)",
-                f"  • 미실현 손익: {pnl_p}{pnl:,.4f} USDT (ROE {roe_p}{roe:,.2f}%)",
-                f"  • 진입가: {pos['entryPrice']:,.4f} | 시장가: {pos['markPrice']:,.4f} USDT",
-                f"  • 포지션 규모: {pos['notional']:,.2f} USDT ({pos['contracts']:g} {name})",
+                f"📈 {name}{open_info}",
+                f"  • 🧊 그리드 미실현 손익: {pnl_p}{pnl:,.4f} USDT (ROE {roe_p}{roe:,.2f}%)",
+                f"  • 🎯 진입 평단가: {pos['entryPrice']:,.4f} | 현재 시장가: {pos['markPrice']:,.4f} USDT",
+                f"  • 📦 포지션 규모: {pos['notional']:,.2f} USDT ({pos['contracts']:g} {name} | {pos['side']} {pos['leverage']}x {pos['marginMode']})",
                 "",
             ]
     return sec
@@ -3716,12 +3784,10 @@ def _포맷_정산_섹션(
 ) -> list:
     """
     특정 구간(주간/월간/전체)의 상세 및 합계 블록 서식 생성.
-    item_list: [(name, stat_dict, cum_val)]
-    days: 기간 일수 (지정 시 '일일 수익 평균' 지표 추가 표기).
-    show_divider: 상단 구분선 출력 여부.
-    item_days_map: 종목별 가동 일수 맵 {name: days}.
-    수수료는 실현수익/누적수익 행의 괄호 안에 통합 표기.
-    단일 종목인 경우 중복되는 합계 블록을 생략하여 간결하게 출력.
+    - 🟢 순수 그리드 익절
+    - 🔴 공백복원 손절
+    - ⚖️ 순실현손익(또는 누적수익)
+    을 명확하게 분리 표기.
     """
     sec = []
     if show_divider:
@@ -3730,11 +3796,10 @@ def _포맷_정산_섹션(
 
     for name, st, _ in item_list:
         p = "+" if st["실현수익"] >= 0 else ""
-        매도cnt = st.get("매도건수", 0)
-        평균수익 = (st["실현수익"] / 매도cnt) if 매도cnt > 0 else 0.0
-        avg_p = "+" if 평균수익 >= 0 else ""
+        g_cnt = st.get("그리드건수", 0)
+        g_profit = st.get("그리드수익", 0.0)
+        g_avg = (g_profit / g_cnt) if g_cnt > 0 else 0.0
 
-        # 기간 일수 확인 (종목별 일수 우선, 없으면 st 거래일수, 없으면 기본 days)
         it_days = (item_days_map.get(name) if item_days_map else None)
         if it_days is None:
             it_days = st.get("거래일수")
@@ -3742,41 +3807,63 @@ def _포맷_정산_섹션(
             it_days = days
 
         if it_days and it_days > 0:
-            일일평균수익 = st["실현수익"] / it_days
-            day_p = "+" if 일일평균수익 >= 0 else ""
-            avg_str = f"매도 1회 평균: {avg_p}{평균수익:,.4f} USDT | 일일 수익 평균: {day_p}{일일평균수익:,.4f} USDT ({it_days}일 기준) | 수수료 {st['수수료']:,.4f} USDT"
+            g_day_avg = g_profit / it_days
+            grid_line = (
+                f"  • 🟢 순수 그리드 익절: +{g_profit:,.4f} USDT "
+                f"({g_cnt}건 | 건당 +{g_avg:,.4f} USDT | 일평균 +{g_day_avg:,.4f} USDT ({it_days}일 기준))"
+            )
         else:
-            avg_str = f"매도 1회 평균: {avg_p}{평균수익:,.4f} USDT | 수수료 {st['수수료']:,.4f} USDT"
+            grid_line = f"  • 🟢 순수 그리드 익절: +{g_profit:,.4f} USDT ({g_cnt}건 | 건당 +{g_avg:,.4f} USDT)"
+
+        c_cnt = st.get("공백손절건수", 0)
+        c_loss = st.get("공백실현손실", 0.0)
+        if c_cnt > 0:
+            gap_line = f"  • 🔴 공백복원 손절:   {c_loss:,.4f} USDT ({c_cnt}건)"
+        else:
+            gap_line = f"  • ⚪ 공백복원 손절:   0.0000 USDT (0건)"
 
         sec += [
             f"📌 {name}",
             f"  매수 {st['매수건수']}건 | 수량 {st['매수수량']:g} | {st['매수금액']:,.2f} USDT",
             f"  매도 {st['매도건수']}건 | 수량 {st['매도수량']:g} | {st['매도금액']:,.2f} USDT",
-            f"  {profit_label} {p}{st['실현수익']:,.4f} USDT ({avg_str})",
+            grid_line,
+            gap_line,
+            f"  • ⚖️ {profit_label}: {p}{st['실현수익']:,.4f} USDT (수수료 {st['수수료']:,.4f} USDT)",
         ]
         sec.append("")
 
-    # 종목이 2개 이상일 때만 전체 합계 블록 출력 (단일 종목 중복 제거)
+    # 종목이 2개 이상일 때만 전체 합계 블록 출력
     if len(item_list) > 1:
         tp = total_stat["실현수익"]
         p = "+" if tp >= 0 else ""
-        tot_매도cnt = total_stat.get("매도건수", 0)
-        tot_평균수익 = (tp / tot_매도cnt) if tot_매도cnt > 0 else 0.0
-        tot_avg_p = "+" if tot_평균수익 >= 0 else ""
+        tot_g_cnt = total_stat.get("그리드건수", 0)
+        tot_g_profit = total_stat.get("그리드수익", 0.0)
+        tot_g_avg = (tot_g_profit / tot_g_cnt) if tot_g_cnt > 0 else 0.0
 
         tot_days = total_stat.get("거래일수") if (total_stat.get("거래일수") is not None and total_stat.get("거래일수") > 0) else days
         if tot_days and tot_days > 0:
-            tot_일일평균수익 = tp / tot_days
-            tot_day_p = "+" if tot_일일평균수익 >= 0 else ""
-            tot_avg_str = f"매도 1회 평균: {tot_avg_p}{tot_평균수익:,.4f} USDT | 일일 수익 평균: {tot_day_p}{tot_일일평균수익:,.4f} USDT ({tot_days}일 기준) | 수수료 {total_stat['수수료']:,.4f} USDT"
+            tot_g_day_avg = tot_g_profit / tot_days
+            tot_grid_line = (
+                f"  • 🟢 순수 그리드 익절: +{tot_g_profit:,.4f} USDT "
+                f"({tot_g_cnt}건 | 건당 +{tot_g_avg:,.4f} USDT | 일평균 +{tot_g_day_avg:,.4f} USDT ({tot_days}일 기준))"
+            )
         else:
-            tot_avg_str = f"매도 1회 평균: {tot_avg_p}{tot_평균수익:,.4f} USDT | 수수료 {total_stat['수수료']:,.4f} USDT"
+            tot_grid_line = f"  • 🟢 순수 그리드 익절: +{tot_g_profit:,.4f} USDT ({tot_g_cnt}건 | 건당 +{tot_g_avg:,.4f} USDT)"
+
+        tot_c_cnt = total_stat.get("공백손절건수", 0)
+        tot_c_loss = total_stat.get("공백실현손실", 0.0)
+        if tot_c_cnt > 0:
+            tot_gap_line = f"  • 🔴 공백복원 손절:   {tot_c_loss:,.4f} USDT ({tot_c_cnt}건)"
+        else:
+            tot_gap_line = f"  • ⚪ 공백복원 손절:   0.0000 USDT (0건)"
 
         sec += [
             "📊 합계",
             f"  매수 {total_stat['매수건수']}건 / {total_stat['매수수량']:g} / {total_stat['매수금액']:,.2f} USDT",
             f"  매도 {total_stat['매도건수']}건 / {total_stat['매도수량']:g} / {total_stat['매도금액']:,.2f} USDT",
-            f"💰 {profit_label}: {p}{tp:,.4f} USDT ({tot_avg_str})",
+            tot_grid_line,
+            tot_gap_line,
+            f"  • 💰 {profit_label}: {p}{tp:,.4f} USDT (수수료 {total_stat['수수료']:,.4f} USDT)",
             "",
         ]
     return sec
@@ -3814,6 +3901,10 @@ def 일일정산_실행(정산일: str, start_dt: datetime = None, end_dt: datet
         t = {
             "매수건수": 0, "매수수량": 0.0, "매수금액": 0.0,
             "매도건수": 0, "매도수량": 0.0, "매도금액": 0.0,
+            "그리드건수": 0, "그리드수량": 0.0, "그리드금액": 0.0,
+            "그리드수익": 0.0, "그리드수수료": 0.0,
+            "공백손절건수": 0, "공백손절수량": 0.0, "공백손절금액": 0.0,
+            "공백실현손실": 0.0, "공백수수료": 0.0,
             "수수료": 0.0, "실현수익": 0.0,
             "거래일수": 0,
         }
@@ -3821,6 +3912,10 @@ def 일일정산_실행(정산일: str, start_dt: datetime = None, end_dt: datet
         for _, st, _ in items:
             t["매수건수"] += st["매수건수"]; t["매수수량"] += st["매수수량"]; t["매수금액"] += st["매수금액"]
             t["매도건수"] += st["매도건수"]; t["매도수량"] += st["매도수량"]; t["매도금액"] += st["매도금액"]
+            t["그리드건수"] += st.get("그리드건수", 0); t["그리드수량"] += st.get("그리드수량", 0.0); t["그리드금액"] += st.get("그리드금액", 0.0)
+            t["그리드수익"] += st.get("그리드수익", 0.0); t["그리드수수료"] += st.get("그리드수수료", 0.0)
+            t["공백손절건수"] += st.get("공백손절건수", 0); t["공백손절수량"] += st.get("공백손절수량", 0.0); t["공백손절금액"] += st.get("공백손절금액", 0.0)
+            t["공백실현손실"] += st.get("공백실현손실", 0.0); t["공백수수료"] += st.get("공백수수료", 0.0)
             t["수수료"] += st["수수료"];   t["실현수익"] += st["실현수익"]
             dates = st.get("거래일목록")
             if isinstance(dates, set):
@@ -3914,7 +4009,7 @@ def 일일정산_실행(정산일: str, start_dt: datetime = None, end_dt: datet
     lines += _포맷_정산_섹션(
         f"2️⃣ [주간 정산] (최근 7일 / 거래 {주간_거래일수}일)",
         weekly_items, tot_weekly,
-        profit_label="실현수익",
+        profit_label="주간 순실현손익",
         days=주간_거래일수,
     )
 
@@ -3923,27 +4018,57 @@ def 일일정산_실행(정산일: str, start_dt: datetime = None, end_dt: datet
     lines += _포맷_정산_섹션(
         f"3️⃣ [월간 정산] (최근 30일 / 거래 {월간_거래일수}일)",
         monthly_items, tot_monthly,
-        profit_label="실현수익",
+        profit_label="월간 순실현손익",
         days=월간_거래일수,
     )
 
     # 4️⃣ [전체 정산] (전체 기간: N일)
-    lines += _포맷_정산_섹션(f"4️⃣ [전체 정산] (전체 기간: {tot_total_days}일)", total_items, tot_total, profit_label="누적수익", days=tot_total_days, item_days_map=item_total_days)
+    lines += _포맷_정산_섹션(
+        f"4️⃣ [전체 정산] (전체 기간: {tot_total_days}일)",
+        total_items, tot_total,
+        profit_label="누적 순실현손익",
+        days=tot_total_days,
+        item_days_map=item_total_days
+    )
 
-    # 📈 [현재 포지션 현황] (비트겟 선물 앱 Positions 카드 정보 - 보유금 현황 상단)
+    # 5️⃣ [현재 포지션 및 미실현 손익]
     try:
         lines += _포맷_포지션_현황_섹션()
     except Exception as e:
         print(f"[포지션 현황 섹션 생성 실패] {e}", flush=True)
 
-    # 현재 보유금 현황
+    # 💼 [종합 손익 대시보드 요약] (순수 그리드 익절 vs 공백 손절 vs 현재 미실현 손익)
     lines.append("━━━━━━━━━━━━━━━")
+    lines.append("💼 [종합 손익 대시보드 요약]")
+    tot_all_g_profit = tot_total.get("그리드수익", 0.0)
+    tot_all_c_loss = tot_total.get("공백실현손실", 0.0)
+    lines.append(f"  • 🟢 누적 그리드 익절: +{tot_all_g_profit:,.4f} USDT")
+    if tot_all_c_loss < 0:
+        lines.append(f"  • 🔴 누적 공백 손절:   {tot_all_c_loss:,.4f} USDT")
+    else:
+        lines.append(f"  • ⚪ 누적 공백 손절:   0.0000 USDT")
+
+    # 미실현 손익 합산
+    total_unrealized = 0.0
+    has_pos_data = False
+    for ticker in 종목코드목록:
+        pos = 현재_롱포지션_현황_조회(ticker)
+        if pos and pos.get("contracts", 0.0) > 0:
+            total_unrealized += float(pos.get("unrealizedPnl", 0.0) or 0.0)
+            has_pos_data = True
+    if has_pos_data:
+        unr_p = "+" if total_unrealized >= 0 else ""
+        lines.append(f"  • 🧊 현재 미실현 손익: {unr_p}{total_unrealized:,.4f} USDT")
+    else:
+        lines.append("  • 🧊 현재 미실현 손익: 0.0000 USDT (보유 포지션 없음)")
+
+    # 현재 보유금 현황
     try:
         총진입, 잔여, 총보유 = 전체_보유금_현황_조회()
         if 잔여 is not None and 총보유 is not None:
-            lines.append(f"💼 현재 보유금 현황: [진입 {총진입:,.4f} + 잔여 {잔여:,.4f} = 총 {총보유:,.4f} USDT]")
+            lines.append(f"  • 💼 계좌 잔고 현황: [포지션 {총진입:,.2f} + 잔여 {잔여:,.2f} = 총 {총보유:,.2f} USDT]")
         else:
-            lines.append(f"💼 현재 보유금 현황: [진입 {총진입:,.4f} + 잔여 조회실패 = 총 N/A USDT]")
+            lines.append(f"  • 💼 계좌 잔고 현황: [포지션 {총진입:,.2f} + 잔여 조회실패 = 총 N/A USDT]")
     except Exception as e:
         print(f"[보유금 현황 조회 실패] {e}", flush=True)
 
@@ -4106,6 +4231,7 @@ def main_loop():
             f"🕒 시간: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
             f"━━━━━━━━━━━━━━━"
         )
+        time.sleep(1.0)
     except Exception as e:
         print(f"[시작 알림 실패] {e}")
 
@@ -4296,8 +4422,9 @@ def main_loop():
             f"🕒 `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
             f"━━━━━━━━━━━━━━━"
         )
-    except Exception:
-        pass
+        time.sleep(2.0)  # 텔레그램 비동기 네트워크 패킷 전송 완료 대기 (프로세스 즉시 종료로 인한 유실 방지)
+    except Exception as e:
+        print(f"[종료 알림 실패] {e}")
 
 
 if __name__ == "__main__":
