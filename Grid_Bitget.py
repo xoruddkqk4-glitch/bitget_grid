@@ -447,6 +447,14 @@ GAP_RECONSTRUCTION_ENABLE = True
 MAX_GAP_CUT_LEVELS = 10
 
 
+# --- 더미(가상) 매수/매도 알림 모드 스위치 ---
+# 📌 DUMMY_SELL_ALERT_MODE = "EACH"
+# - "EACH" : 더미 차수별 목표가 도달 시마다 가상 매수 & 가상 매도 발송 (검증/테스트용)
+# - "OFF"  : 더미 매도 알림 끔 (조용히 침묵하며 실제 포지션 청산만 대기, 안정 운영용)
+# - "ONCE" : 최저 바닥 차수 첫 반등 시 1회만 요약 알림 발송
+DUMMY_SELL_ALERT_MODE = "EACH"
+
+
 # ===============================
 # 📌 매매 전략 설정
 # ===============================
@@ -1271,6 +1279,91 @@ def 더미매수_텔레그램알림(Ticker: str, 차수: int, 현재가: float, 
         print(f"📢 [가상 매수 알림 전송] {Ticker} {차수}차 더미 기록 텔레그램 발송 완료", flush=True)
     except Exception as e:
         print(f"⚠️ [가상 매수 텔레그램 발송 실패] {e}", flush=True)
+
+
+def 더미매도_텔레그램알림(Ticker: str, 차수: int, entry_price: float, 현재가: float, config: Dict[str, Any]) -> None:
+    """
+    증거금 부족으로 가상 기록된 더미 매수 차수가 반등하여 익절 목표가에 도달했을 때,
+    차수당 발송되는 텔레그램 안내 메시지 (가상 매도/청산).
+    """
+    try:
+        title_symbol = Ticker.split('/')[0]
+        매수금액 = float(config.get("매수금액", 0.0))
+        수익률 = (현재가 / entry_price - 1.0) * 100.0 if entry_price > 0 else 0.0
+        가상손익 = 매수금액 * (수익률 / 100.0)
+        msg = (
+            f"📈 *[{title_symbol}_그리드롱 가상 매도 (더미 청산)]* 📈\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"📊 *종목*: `{Ticker}`\n"
+            f"🔢 *가상 차수*: `{차수}차` (더미 청산)\n"
+            f"💵 *진입 시세*: `{entry_price:.6f} USDT`\n"
+            f"🎯 *청산 시세*: `{현재가:.6f} USDT`\n"
+            f"✨ *가상 수익률*: `+{수익률:.2f}%` (`+{가상손익:+.4f} USDT`)\n"
+            f"💡 *안내*: 바닥 반등 회복 진행 중 (실제 잔고 보유분 회복 추적)\n"
+            f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
+            f"━━━━━━━━━━━━━━━"
+        )
+        telegram_alert.SendMessage(msg)
+        print(f"📢 [가상 매도 알림 전송] {Ticker} {차수}차 더미 청산 텔레그램 발송 완료", flush=True)
+    except Exception as e:
+        print(f"⚠️ [가상 매도 텔레그램 발송 실패] {e}", flush=True)
+
+
+def 더미_가상매도_감시_및_실행(Ticker: str, 현재가: float) -> None:
+    """
+    더미 매수 기록된 가상 차수들의 반등 여부를 감시하고,
+    목표가 도달 시 가상 매도 텔레그램 발송 및 상태 파일 원자적 갱신(청산 차수 제거).
+    DUMMY_SELL_ALERT_MODE 설정에 따라 작동 ("EACH", "ONCE", "OFF").
+    """
+    if DUMMY_SELL_ALERT_MODE == "OFF" or 현재가 <= 0:
+        return
+
+    try:
+        state = 잔고부족_상태로드(Ticker)
+        attempts = state.get("attempts", [])
+        if not attempts:
+            return
+
+        grid_cfg = trade_config.get(Ticker, {}).get("grid_config", {})
+        cleared_levels = set()
+        new_attempts = []
+
+        # 각 더미 차수의 목표가 도달 여부 확인
+        for a in attempts:
+            try:
+                차수 = int(a.get("차수", 0))
+                entry_price = float(a.get("price", 0.0))
+            except Exception:
+                continue
+
+            if 차수 <= 0 or entry_price <= 0:
+                continue
+
+            config = grid_cfg.get(차수, {})
+            매도간격 = float(config.get("매도간격", 0.7))
+            목표가 = entry_price * (1.0 + 매도간격 / 100.0)
+
+            # 가상 목표가 도달 시
+            if 현재가 >= 목표가:
+                cleared_levels.add(차수)
+                if DUMMY_SELL_ALERT_MODE in ["EACH", "ONCE"]:
+                    더미매도_텔레그램알림(Ticker, 차수, entry_price, 현재가, config)
+                print(
+                    f"✨ [더미 가상 청산] {Ticker} {차수}차 도달! "
+                    f"진입 {entry_price:.6f} -> 현재 {현재가:.6f} (목표 {목표가:.6f})",
+                    flush=True
+                )
+            else:
+                # 미청산된 차수는 유지
+                new_attempts.append(a)
+
+        # 청산된 차수가 있으면 상태 원자적 저장 (해당 차수 기록 제거로 중복 스팸 방지)
+        if cleared_levels:
+            state["attempts"] = new_attempts
+            잔고부족_상태저장(Ticker, state)
+
+    except Exception as e:
+        print(f"⚠️ [더미 가상 매도 감시 오류] {Ticker}: {e}", flush=True)
 
 
 def 엑셀_스냅샷_백업(Ticker: str, file_name: str) -> str:
@@ -4329,6 +4422,7 @@ def main_loop():
 
                         # 2) 그리드 매도 실행 (고점 순차 익절) -> 매도 미발생 시 매수 실행
                         매도발생 = 매도실행(Ticker, 현재가)
+                        더미_가상매도_감시_및_실행(Ticker, 현재가)
                         if not 매도발생:
                             매수실행(Ticker, 현재가)
                 except Exception as e:
