@@ -1136,28 +1136,52 @@ def 잔고부족_시도기록(Ticker: str, 차수: int, 현재가: float) -> Non
     """
     증거금 부족(InsufficientFunds)으로 매수 실패 시 차수, 시세, 타임스탬프 기록.
     엑셀 원장을 오염시키지 않고 독립 상태 파일에만 누적.
+    동일 차수가 이미 존재할 경우 중복 누적(스팸 원인)을 방지하고 최신 타임스탬프 갱신(Upsert).
     """
     state = 잔고부족_상태로드(Ticker)
     now_str = 지금().isoformat()
     attempts = state.get("attempts", [])
     cutoff = 지금() - timedelta(hours=24)
-    valid_attempts = []
+
+    # 24시간 이내 유효한 기록 필터링 및 기존 동일 차수 정제 (중복 누적 방지)
+    by_level: Dict[int, Dict[str, Any]] = {}
     for a in attempts:
         try:
+            lvl = int(a.get("차수", 0))
+            if lvl <= 0:
+                continue
             ts = datetime.fromisoformat(a.get("timestamp", ""))
             if ts.tzinfo is not None:
                 ts = ts.astimezone(KST).replace(tzinfo=None)
             if ts >= cutoff:
-                valid_attempts.append(a)
+                if lvl not in by_level or ts > by_level[lvl]["ts_obj"]:
+                    by_level[lvl] = {
+                        "entry": a,
+                        "ts_obj": ts
+                    }
         except Exception:
             continue
-    valid_attempts.append({
-        "차수": int(차수),
-        "price": float(현재가),
-        "timestamp": now_str
-    })
-    state["attempts"] = valid_attempts
+
+    target_lvl = int(차수)
+    if target_lvl in by_level:
+        # 이미 존재하는 차수: 최초 진입가는 유지하고 타임스탬프만 최신으로 갱신 (쿨다운 판별 유지)
+        by_level[target_lvl]["entry"]["timestamp"] = now_str
+    else:
+        # 신규 차수 추가
+        by_level[target_lvl] = {
+            "entry": {
+                "차수": target_lvl,
+                "price": float(현재가),
+                "timestamp": now_str
+            },
+            "ts_obj": 지금()
+        }
+
+    # 차수 오름차순으로 정렬하여 저장
+    sorted_attempts = [v["entry"] for k, v in sorted(by_level.items(), key=lambda item: item[0])]
+    state["attempts"] = sorted_attempts
     잔고부족_상태저장(Ticker, state)
+
 
 def 잔고부족_최근시도횟수(Ticker: str, window_sec: int = 2400) -> int:
     """
@@ -1345,21 +1369,32 @@ def 더미_가상매도_감시_및_실행(Ticker: str, 현재가: float) -> None
 
             # 가상 목표가 도달 시
             if 현재가 >= 목표가:
-                cleared_levels.add(차수)
-                if DUMMY_SELL_ALERT_MODE in ["EACH", "ONCE"]:
-                    더미매도_텔레그램알림(Ticker, 차수, entry_price, 현재가, config)
-                print(
-                    f"✨ [더미 가상 청산] {Ticker} {차수}차 도달! "
-                    f"진입 {entry_price:.6f} -> 현재 {현재가:.6f} (목표 {목표가:.6f})",
-                    flush=True
-                )
+                # 동일 차수에 대해 이번 루프에서 중복 발송 방지 (차수당 최초 1회만 발송)
+                if 차수 not in cleared_levels:
+                    cleared_levels.add(차수)
+                    if DUMMY_SELL_ALERT_MODE in ["EACH", "ONCE"]:
+                        더미매도_텔레그램알림(Ticker, 차수, entry_price, 현재가, config)
+                    print(
+                        f"✨ [더미 가상 청산] {Ticker} {차수}차 도달! "
+                        f"진입 {entry_price:.6f} -> 현재 {현재가:.6f} (목표 {목표가:.6f})",
+                        flush=True
+                    )
             else:
-                # 미청산된 차수는 유지
-                new_attempts.append(a)
+                # 미청산된 차수는 유지 (이미 청산 처리된 차수는 제외)
+                if 차수 not in cleared_levels:
+                    new_attempts.append(a)
 
         # 청산된 차수가 있으면 상태 원자적 저장 (해당 차수 기록 제거로 중복 스팸 방지)
+        # 미청산 목록 내에서도 동일 차수 중복을 최종 정제(deduplication)
         if cleared_levels:
-            state["attempts"] = new_attempts
+            dedup_new = []
+            seen_levels = set()
+            for item in new_attempts:
+                lvl = int(item.get("차수", 0))
+                if lvl not in seen_levels and lvl not in cleared_levels:
+                    seen_levels.add(lvl)
+                    dedup_new.append(item)
+            state["attempts"] = dedup_new
             잔고부족_상태저장(Ticker, state)
 
     except Exception as e:
