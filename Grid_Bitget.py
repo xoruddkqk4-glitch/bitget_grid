@@ -3288,9 +3288,10 @@ def 매수실행(Ticker: str, 현재가: float):
             except Exception as e:
                 print(f"[매수 텔레그램 - 총수익 추가 실패] {e}")
 
+        총시도수 = 최근_총매수시도_고유차수수(df, Ticker, BUY_COOLDOWN_WINDOW_SEC)
         보유금라인 = 보유금_텔레그램라인(Ticker, df)
         message = (
-            f"🚨[{title_symbol}_그리드롱 진입 완료]*🚨\n"
+            f"🚨*[{title_symbol}_그리드롱 진입 완료]*🚨\n"
             f"━━━━━━━━━━━━━━━\n"
             f"📊 *종목*: `{Ticker}`\n"
             f"🔢 *차수*: `{차수}`\n"
@@ -3299,6 +3300,7 @@ def 매수실행(Ticker: str, 현재가: float):
             f"📐 *슬리피지*: `{매수슬리피지:+.4f}%`\n"
             f"📦 *체결수량*: `{실제체결수량}`\n"
             f"💰 *체결금액*: `{실제체결금액:.6f} USDT`\n"
+            f"🔢 *최근 {BUY_COOLDOWN_WINDOW_SEC // 60}분 누적*: `{총시도수} / {BUY_COOLDOWN_BUY_COUNT}개` ({BUY_COOLDOWN_BUY_COUNT}개 도달 시 쿨링)\n"
             f"{손익블록}"
             f"{보유금라인}"
             f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
@@ -3317,15 +3319,14 @@ def 매수실행(Ticker: str, 현재가: float):
 
         # 급락 연쇄 매수 쿨링 체크 (여기 도달 시 쿨링 중이 아님)
         if BUY_COOLDOWN_ENABLE:
-            횟수 = 최근_총매수시도_고유차수수(df, Ticker, BUY_COOLDOWN_WINDOW_SEC)
-            if 횟수 >= BUY_COOLDOWN_BUY_COUNT:
+            if 총시도수 >= BUY_COOLDOWN_BUY_COUNT:
                 쿨링시작(Ticker)
                 until = 지금() + timedelta(seconds=BUY_COOLDOWN_PAUSE_SEC)
                 cool_msg = (
                     f"🧊 *[{title_symbol}_매수 쿨링 발동]*\n"
                     f"━━━━━━━━━━━━━━━\n"
                     f"📊 *종목*: `{Ticker}`\n"
-                    f"🔢 *최근 {BUY_COOLDOWN_WINDOW_SEC // 60}분 고유차수*: `{횟수}개` "
+                    f"🔢 *최근 {BUY_COOLDOWN_WINDOW_SEC // 60}분 고유차수*: `{총시도수}개` "
                     f"(기준 {BUY_COOLDOWN_BUY_COUNT}개)\n"
                     f"⏸ *매수 금지*: `{BUY_COOLDOWN_PAUSE_SEC // 60}분` "
                     f"(~{until.strftime('%H:%M:%S')})\n"
@@ -3336,7 +3337,7 @@ def 매수실행(Ticker: str, 현재가: float):
                 )
                 telegram_alert.SendMessage(cool_msg)
                 print(
-                    f"🧊 쿨링 발동 - {Ticker} 최근 고유차수 {횟수}개 / "
+                    f"🧊 쿨링 발동 - {Ticker} 최근 고유차수 {총시도수}개 / "
                     f"{BUY_COOLDOWN_PAUSE_SEC // 60}분 매수 금지",
                     flush=True
                 )

@@ -485,3 +485,17 @@
       - 텔레그램: `🔄 라이딩 중 매도: [STAGE1_ONLY] 0.7% 보존선 하회 시만 매도 (우상향 홀딩)` 라인 추가
 - **검증 결과**:
   - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
+
+## [2026-10-22 08:44] 업데이트 이력 (Commit ID: pending)
+- **수정 내용**:
+  - **그리드 실제 매수 체결 텔레그램 메시지에 쿨링다운 누적 정보 추가 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
+    - **1) 쿨링 누적 고유 차수 집계 사전 연산**:
+      - 매수 체결 데이터가 엑셀(`df`)에 반영된 직후 `최근_총매수시도_고유차수수(df, Ticker, BUY_COOLDOWN_WINDOW_SEC)`를 호출하여 방금 체결된 차수를 포함한 최근 40분 누적 카운트(`총시도수`) 산출
+    - **2) 실제 매수 텔레그램 메시지 포맷 통일**:
+      - 더미 매수 메시지와 동일한 형식의 쿨링다운 누적 정보 라인을 체결금액 하단에 추가:
+        `f"🔢 *최근 {BUY_COOLDOWN_WINDOW_SEC // 60}분 누적*: `{총시도수} / {BUY_COOLDOWN_BUY_COUNT}개` ({BUY_COOLDOWN_BUY_COUNT}개 도달 시 쿨링)\n"`
+      - 마크다운 볼드 닫힘 태그 오탈자(`🚨*[{title_symbol}_그리드롱 진입 완료]*🚨`) 교정
+    - **3) 쿨링 발동 조건 판정 연동 최적화**:
+      - 하단의 급락 쿨링 발동 체크 로직(`BUY_COOLDOWN_ENABLE`)에서도 중복 연산 없이 이미 산출된 `총시도수`를 재사용하도록 정돈
+- **검증 결과**:
+  - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
