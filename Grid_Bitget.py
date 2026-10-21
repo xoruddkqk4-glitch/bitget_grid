@@ -389,6 +389,18 @@ TREND_EXIT_BUFFER_PCT = 0.5
 MA_CACHE_SECONDS = 30       # 일봉 캐시 30초
 MA_4H_CACHE_SECONDS = 15    # 4시간봉 캐시 15초
 
+# 📌 TREND_RIDING_SELL_MODE = "STAGE1_ONLY"
+# - 추세 라이딩(상태 2) 중 매도 허용 범위를 결정합니다.
+# - "STAGE1_ONLY" (권장):
+#     우상향 중인 차수는 100% 홀딩하여 추세를 끝까지 타되,
+#     수익률이 +TRAIL_STAGE1_PCT(0.7%) 이상 도달 후 그 이하로 반락하는 차수만
+#     '이익 보존 매도'를 실행하여 수익 반납 원천 차단.
+# - "ALL":
+#     1단계(0.7% 보존선) 및 2단계(0.9% 이상 도달 후 고점 대비 -0.2%p 하락) 모두 매도 허용.
+# - "OFF":
+#     기존 방식 (5MA 지지선 이탈 전까지 매도 100% 전면 금지, 무조건 홀딩).
+TREND_RIDING_SELL_MODE = "STAGE1_ONLY"  # "STAGE1_ONLY" | "ALL" | "OFF"
+
 
 # --- 트레일링 매도 설정 (2단계 하이브리드) ---
 # 📌 TRAILING_ENABLE = True
@@ -3335,13 +3347,17 @@ def 매수실행(Ticker: str, 현재가: float):
 # ===============================
 # 매도 실행 함수
 # ===============================
-def 매도실행(Ticker: str, 현재가: float) -> bool:
+def 매도실행(Ticker: str, 현재가: float, riding_mode: str = None) -> bool:
     """
     그리드 매도 로직
     - TRAILING_ENABLE: 2단계 하이브리드 트레일링
       · 1단계 (+TRAIL_STAGE1_PCT ~ +TRAIL_STAGE2_PCT 미만): 0.7% 이하 하회 시 보존 매도
       · 2단계 (+TRAIL_STAGE2_PCT 이상): 고점 대비 TRAIL_DISTANCE_PCT 하락 시 청산
     - TRAILING_ENABLE=False: 매도간격 고정 목표가 청산
+    - riding_mode: 추세 라이딩 중 매도 제어 모드
+      · None     : 일반 그리드 모드 (TRAILING_ENABLE 기준 그대로 적용)
+      · "STAGE1_ONLY": 라이딩 중, 최고수익률이 +0.7% 이상 찍은 차수가 +0.7% 이하로 하회 시에만 매도
+      · "ALL"    : 라이딩 중, 1단계(0.7%) + 2단계(고점-0.2%) 모두 허용
     - 한 폴링에서 여러 차수가 동시에 청산될 수 있음
     - 반환값: 매도 발생 시 True (이번 폴링에서 매수는 스킵)
     """
@@ -3389,12 +3405,22 @@ def 매도실행(Ticker: str, 현재가: float) -> bool:
         매도조건 = False
         트레일매도선 = 0.0
         트레일단계 = 0
+        라이딩_보존매도 = False  # 라이딩 중 이익 보존 매도 여부 플래그
         if TRAILING_ENABLE:
             if 최고수익률 >= TRAIL_STAGE2_PCT:
                 # 2단계: 0.9% 이상 도달 후 다이내믹 트레일링 (고점 - 0.2%)
                 트레일단계 = 2
                 트레일매도선 = 최고수익률 - TRAIL_DISTANCE_PCT
-                매도조건 = (현재수익률 <= 트레일매도선)
+                if riding_mode == "STAGE1_ONLY":
+                    # 라이딩 STAGE1_ONLY: 2단계 고점 트레일링은 홀딩하되,
+                    # 최소 이익 보존선(+0.7%) 아래로 내려오면 이익 반납 방지 매도
+                    매도조건 = (현재수익률 <= TRAIL_STAGE1_PCT)
+                    if 매도조건:
+                        라이딩_보존매도 = True
+                        트레일매도선 = TRAIL_STAGE1_PCT  # 보존선 기준으로 표기
+                else:
+                    # 일반 모드(None) 또는 ALL 모드: 기존 2단계 다이내믹 트레일링
+                    매도조건 = (현재수익률 <= 트레일매도선)
             elif 최고수익률 >= TRAIL_STAGE1_PCT:
                 # 1단계: 0.7% 이상 도달 후 1차 이익 보존선 (0.7% 하회 시 매도)
                 트레일단계 = 1
@@ -3443,7 +3469,12 @@ def 매도실행(Ticker: str, 현재가: float) -> bool:
         매매기록저장(df, file_name)
 
         if TRAILING_ENABLE:
-            단계_태그 = f"{트레일단계}차" if 트레일단계 > 0 else "트레일"
+            if 라이딩_보존매도:
+                단계_태그 = "1차-라이딩보존"
+            elif 트레일단계 > 0:
+                단계_태그 = f"{트레일단계}차"
+            else:
+                단계_태그 = "트레일"
             트레일라인 = (
                 f"📍 *트레일링({단계_태그})*: 고점`{최고수익률:.4f}%` / "
                 f"매도선`{트레일매도선:.4f}%` / 청산시`{현재수익률:.4f}%`\n"
@@ -4279,7 +4310,13 @@ def main_loop():
     else:
         print(f"   - 총 수익 목표: 비활성화 (TOTAL_PROFIT_TARGET_ENABLE=False)")
     if TREND_RIDING_ENABLE:
+        _sell_mode_label = {
+            "STAGE1_ONLY": "0.7% 보존선 하회 시만 매도",
+            "ALL"        : "1단계+2단계 모두 허용",
+            "OFF"        : "100% 홀딩 (모든 매도 괈지)",
+        }.get(TREND_RIDING_SELL_MODE, TREND_RIDING_SELL_MODE)
         print(f"   - 3-State 엔진: 활성화 (일봉+4시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% MTF 지지선 이탈 필터)")
+        print(f"   - 라이딩 중 매도: [{TREND_RIDING_SELL_MODE}] {_sell_mode_label}")
     else:
         print(f"   - 3-State 엔진: 비활성화 (기존 그리드)")
     print(f"   - 종목: {종목코드목록}", flush=True)
@@ -4297,8 +4334,14 @@ def main_loop():
 
     # 시작 알림
     try:
+        _sell_mode_desc = {
+            "STAGE1_ONLY": f"0.7% 보존선 하회 시만 매도 (우상향 홀딩)",
+            "ALL"        : f"1/2단계 트레일링 전체 허용",
+            "OFF"        : f"100% 홀딩 (매도 전면 금지)",
+        }.get(TREND_RIDING_SELL_MODE, TREND_RIDING_SELL_MODE)
         trend_line = (
             f"🚀 3-State 엔진: `일봉+4시간봉 5MA MTF 추세 라이딩` (이탈: -{TREND_EXIT_BUFFER_PCT}% 동시하회)\n"
+            f"🔄 라이딩 중 매도: `[{TREND_RIDING_SELL_MODE}] {_sell_mode_desc}`\n"
             if TREND_RIDING_ENABLE else "🚀 3-State 엔진: `비활성`\n"
         )
         trail_line = (
@@ -4425,8 +4468,16 @@ def main_loop():
                             print(f"[총수익 로그 실패] {e}")
 
                     if 라이딩_중:
-                        # ── 상태 2: [추세 라이딩] 매도 일시정지 (100% 홀딩) & 매수만 유지 ──
-                        매수실행(Ticker, 현재가)
+                        # ── 상태 2: [추세 라이딩] ──
+                        # TREND_RIDING_SELL_MODE에 따라 일부 매도 허용 여부 제어
+                        매도발생 = False
+                        if TREND_RIDING_SELL_MODE in ("STAGE1_ONLY", "ALL"):
+                            # 이익 보존선 하회 시 방어 매도 허용
+                            매도발생 = 매도실행(Ticker, 현재가, riding_mode=TREND_RIDING_SELL_MODE)
+                            더미_가상매도_감시_및_실행(Ticker, 현재가)
+                        # 매도 미발생 시 매수 유지 (하단 방어)
+                        if not 매도발생:
+                            매수실행(Ticker, 현재가)
                     else:
                         # ── 상태 3 및 상태 1: [추세 꺾임 / 그리드 수비 모드] ──
                         # 1) 목표 순익 달성 검사 및 전량 청산 판단 (꺾임 직후 또는 정기 주기)
