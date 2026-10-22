@@ -196,6 +196,15 @@ import telegram_alert  # 사용자 정의 모듈: SendMessage(text: str) 제공
 # 일일 정산(_kst_now)과 거래 시각이 어긋나면 정산 구간이 9시간 밀린다.
 KST = timezone(timedelta(hours=9))
 
+# [구글 시트 연동 로거 추가]
+from sheets_logger import SheetsLogger
+sheet_logger = SheetsLogger(
+    webhook_url="https://script.google.com/macros/s/AKfycbws77Zb7aGqs_L5K0yLDf5iDVBXHKO_abf5eL1vlvUTh4197W-dujvmxm-vEBj8Hjdq/exec",
+    auth_token="trading_secret_2026",
+    strategy_name="그리드",
+    exchange="Bitget"
+)
+
 def 지금() -> datetime:
     """서울(KST) 기준 naive datetime."""
     return datetime.now(KST).replace(tzinfo=None)
@@ -3309,6 +3318,16 @@ def 매수실행(Ticker: str, 현재가: float):
 
         telegram_alert.SendMessage(message)
 
+        # [구글 시트 체결 기록 전송 추가]
+        sheet_logger.log_trade(
+            action="BUY",
+            symbol=Ticker,
+            level=f"{차수}차",
+            price=실제체결가,
+            amount=실제체결수량,
+            note=f"그리드 분할 매수 체결 (슬리피지 {매수슬리피지:+.4f}%)"
+        )
+
         print(
             f"✅ 매수 완료 - {Ticker} 차수 {차수} | "
             f"체결가 {실제체결가:.{PRICE_LOG_DECIMALS}f} "
@@ -3513,6 +3532,18 @@ def 매도실행(Ticker: str, 현재가: float, riding_mode: str = None) -> bool
         )
 
         telegram_alert.SendMessage(message)
+
+        # [구글 시트 체결 기록 전송 추가]
+        sheet_logger.log_trade(
+            action="SELL",
+            symbol=Ticker,
+            level=f"{차수}차",
+            price=실제체결가,
+            amount=청산수량,
+            pnl=실현손익,
+            pnl_pct=수익률,
+            note=f"트레일링 익절 완료 (고점 {최고수익률:+.2f}%)"
+        )
 
         print(
             f"💸 매도 완료 - {Ticker} 차수 {차수} | "

@@ -499,3 +499,20 @@
       - 하단의 급락 쿨링 발동 체크 로직(`BUY_COOLDOWN_ENABLE`)에서도 중복 연산 없이 이미 산출된 `총시도수`를 재사용하도록 정돈
 - **검증 결과**:
   - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
+
+## [2026-10-22 21:30] 업데이트 이력 (Commit ID: pending)
+- **수정 내용**:
+  - **구글 스프레드시트 비동기 Webhook 체결 연동 로거 신규 구축 및 그리드 봇 실시간 연동**:
+    - **1) `sheets_logger.py` 신규 모듈 도입 ([`sheets_logger.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/sheets_logger.py))**:
+      - Google Apps Script Webhook API 기반 경량 HTTP 로거 클래스(`SheetsLogger`) 구현
+      - `log_trade()`: 체결 액션(`BUY`/`SELL`), 심볼, 차수, 체결가, 체결수량, 수수료, 실현손익, 수익률, 비고(슬리피지, 익절 고점 등)를 구글 시트 `통합_체결원장`으로 실시간 비동기 전송
+      - `log_snapshot()`: 일별 총자산, 현금, 보유가치, 당일손익, 누적손익 등 `일별_자산스냅샷` 기록 기능 제공
+      - 3초 타임아웃 및 전체 네트워크 호출 `try...except` 격리 설계를 적용하여, 구글 시트 응답 지연이나 장애 발생 시에도 기존 로컬 엑셀 원장 저장 및 3초 매매 주기 루프 무중단 완벽 보장
+    - **2) `Grid_Bitget.py` 체결 기록 전송 연동 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
+      - 상단 전역에 `SheetsLogger` 인스턴스 초기화 (`strategy_name="그리드"`, `exchange="Bitget"`)
+      - `매수실행()`: 텔레그램 알림 발송 직후 `sheet_logger.log_trade(action="BUY", ...)` 호출 연동 (슬리피지 정보 포함)
+      - `매도실행()`: 텔레그램 알림 발송 직후 `sheet_logger.log_trade(action="SELL", ...)` 호출 연동 (실현손익, 수익률, 최고수익률 정보 포함)
+- **검증 결과**:
+  - `python -m py_compile Grid_Bitget.py sheets_logger.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
+  - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 전송 및 원격 구문 검증 완료
+  - 프로세스 정상 재기동 및 텔레그램 알림, 실시간 매매 로그 정상 작동 확인
