@@ -561,3 +561,14 @@
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
   - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 체결 로그 정상 확인
 
+## [2026-10-23 08:44] 업데이트 이력 (Commit ID: 7a2b238)
+- **수정 내용**:
+  - **`Grid_Bitget.py` 그리드 차수별 투입 금액 하향 조정 (143 USDT ➔ 50 USDT) ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
+    - **차수별 매수금액 조정**: `GRID_TEMPLATE` 1차부터 100차까지 모든 구간의 1회 진입 매수금액을 기존 143 USDT에서 **50 USDT**로 일괄 하향 조정
+    - **기대 효과**: 전체 차수 소진 시의 총 필요 증거금 규모를 1/3 수준으로 축소하여 급락장에서의 증거금 여유 확보 및 계좌 리스크 관리 대폭 강화
+- **검증 결과**:
+  - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
+  - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
+  - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 체결 로그 정상 확인
+
+
