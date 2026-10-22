@@ -516,3 +516,14 @@
   - `python -m py_compile Grid_Bitget.py sheets_logger.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 전송 및 원격 구문 검증 완료
   - 프로세스 정상 재기동 및 텔레그램 알림, 실시간 매매 로그 정상 작동 확인
+
+## [2026-10-22 22:55] 업데이트 이력 (Commit ID: TBD)
+- **수정 내용**:
+  - **`Grid_Bitget.py` 트레일링 매도 시 구글 스프레드시트 체결 로거 연동 매개변수 오류(`NameError`) 긴급 수정 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
+    - **오류 원인 해소**: 실서버 운영 중 매도 청산 발생 시 `[SOXL/USDT:USDT 처리 오류] name '청산수량' is not defined` 예외가 발생하여 매도 체결 후 구글 시트 전송 단계에서 오류가 발생하던 현상 수정
+    - **참조 변수 교정**: `amount=청산수량`을 실제 체결 함수에서 반환된 유효 로컬 변수인 `amount=실제체결수량`으로 올바르게 수정
+    - **수수료 매개변수 추가**: `fee=수수료` 매개변수를 추가하여 매도 시 발생한 거래 수수료를 구글 시트 원장에 정확히 전송하도록 보강
+- **검증 결과**:
+  - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
+  - EC2 실서버 파일 배포 및 프로세스 안전 재기동(`pkill -15`) 확인
+  - 실시간 로그 모니터링을 통해 `name '청산수량' is not defined` 오류 해소 및 정상 작동 확인
