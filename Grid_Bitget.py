@@ -455,16 +455,32 @@ BUY_COOLDOWN_BUY_COUNT = 5
 BUY_COOLDOWN_PAUSE_SEC = 3600
 
 
-# --- 쿨링 공백 복원 롤다운 그리드 설정 (v2.4 비상 자가치유 롤다운 탑재) ---
+# --- 쿨링 공백 복원 롤다운 그리드 설정 (v2.6 자금 충분 시 조건부 손절 스킵 탑재) ---
 # 📌 GAP_RECONSTRUCTION_ENABLE = True
 # - True : 쿨링 해제 후 Rebase 첫 매수 체결(또는 증거금 고갈 시 비상 선손절) 시,
-#          직전 차수와의 공백을 계산하여 상위 차수 강제 손절 및 공백 예약 매수 그물망 배치
+#          직전 차수와의 공백을 계산하여 공백 예약 매수 그물망 배치 및 조건부 손절
 # - False: 기능 비활성화 (기존 하이브리드 Rebase 방식만 유지)
 GAP_RECONSTRUCTION_ENABLE = True
 
+# 📌 GAP_CUT_MODE = "AUTO_BY_FUNDS"
+# - "AUTO_BY_FUNDS" (기본/권장):
+#     공백 복원 예약 매수를 채울 가용 USDT 잔고가 충분하면 상위 차수 강제 손절을 건너뛰고(0개 손절),
+#     기존 보유 차수를 100% 보존하면서 공백 예약 매수망을 가동합니다.
+#     가용 잔고가 부족할 때만 상위 차수를 손절하여 매수 증거금/슬롯을 확보합니다.
+# - "ALWAYS":
+#     기존 방식. 보유 잔고와 무관하게 무조건 상위 차수를 강제 손절하고 바닥으로 슬롯을 롤다운합니다.
+# - "NEVER":
+#     어떠한 경우에도 상위 차수를 손절하지 않습니다. (손절 없이 공백 예약 매수만 진행)
+GAP_CUT_MODE = "AUTO_BY_FUNDS"
+
+# 📌 GAP_CUT_FUNDS_BUFFER_RATIO = 1.0
+# - AUTO_BY_FUNDS 모드 판정 시 필요 가용자금 배수 (기본값: 1.0 = 100%)
+# - 필요 가용자금 = (복원 계획 차수 K * 차수별 매수금액) * GAP_CUT_FUNDS_BUFFER_RATIO
+GAP_CUT_FUNDS_BUFFER_RATIO = 1.0
+
 # 📌 MAX_GAP_CUT_LEVELS = 10
-# - 1회 공백 복원 시 최대 손절 차수 캡 제한 (기본값: 10개)
-# - 아무리 공백이 커도 1회에 최대 10개까지만 손절하여 계좌 손실 충격 완화
+# - 1회 공백 복원 시 최대 손절(또는 복원) 차수 캡 제한 (기본값: 10개)
+# - 아무리 공백이 커도 1회에 최대 10개까지만 손절/복원하여 계좌 충격 완화
 MAX_GAP_CUT_LEVELS = 10
 
 
@@ -1501,9 +1517,9 @@ def 쿨링공백복원_실행(
         매매기록저장(df, file_name)
         return
 
-    # 3. 실제 손절 차수 수 K 결정 (최대 캡 적용)
-    K = min(N - 1, MAX_GAP_CUT_LEVELS, len(미청산))
-    if K <= 0:
+    # 3. 공백 복원 계획 차수 수 K_plan 결정 (최대 캡 적용)
+    K_plan = min(N - 1, MAX_GAP_CUT_LEVELS)
+    if K_plan <= 0:
         max_open_level = int(미청산["차수"].max())
         new_row = pd.DataFrame([{
             "종목": Ticker, "차수": max_open_level + 1, "매수날짜": 지금(),
@@ -1514,47 +1530,83 @@ def 쿨링공백복원_실행(
         매매기록저장(df, file_name)
         return
 
-    print(
-        f"🌪️ [공백 복원 롤다운 발동] {Ticker} | 직전가={P_prev:.4f} ➔ 체결가={rebase_px:.4f} "
-        f"| 공백={Gap_pct:.2f}% ({N}개) | 상위 {K}개 손절 청산 개시",
-        flush=True
-    )
+    # 4. 자금 충분 조건 및 손절 여부 판정 (GAP_CUT_MODE)
+    default_amount = float(trade_config[Ticker]["grid_config"].get(1, {}).get("매수금액", 143.0))
+    needed_funds = default_amount * K_plan * GAP_CUT_FUNDS_BUFFER_RATIO
+    free_usdt = 거래소_USDT_잔고조회()
 
-    # 4. 안전장치: 엑셀 자동 스냅샷 백업
-    엑셀_스냅샷_백업(Ticker, file_name)
+    should_cut = True
+    cut_decision_reason = ""
 
-    # 5. 상위 K개 차수 시장가 강제 손절 (reduceOnly)
-    손절대상 = 미청산.sort_values(by=["매수가"], ascending=False).iloc[:K]
-    cut_indices = list(손절대상.index)
-    cut_levels = list(손절대상["차수"].values)
-    total_cut_qty = float(손절대상["매수수량"].sum())
+    if GAP_CUT_MODE == "NEVER":
+        should_cut = False
+        cut_decision_reason = "NEVER 모드 (손절 전면 금지)"
+    elif GAP_CUT_MODE == "AUTO_BY_FUNDS":
+        if free_usdt is not None and free_usdt >= needed_funds:
+            should_cut = False
+            cut_decision_reason = f"가용 잔고 충분 ({free_usdt:.2f} >= {needed_funds:.2f} USDT, 손절 스킵)"
+        else:
+            should_cut = True
+            free_str = f"{free_usdt:.2f}" if free_usdt is not None else "조회불가"
+            cut_decision_reason = f"가용 잔고 부족 ({free_str} < {needed_funds:.2f} USDT, 슬롯/증거금 손절)"
+    else:  # "ALWAYS"
+        should_cut = True
+        cut_decision_reason = "ALWAYS 모드 (무조건 손절)"
 
-    sell_px = rebase_px
-    try:
-        sell_res = bitgetX.create_market_sell_order(
-            symbol=Ticker, amount=total_cut_qty, params={"reduceOnly": True}
-        )
-        sell_px, sell_qty, sell_cost = 체결가_조회(
-            Ticker, sell_res, fallback_price=rebase_px, fallback_qty=total_cut_qty
-        )
-    except Exception as e:
-        print(f"⚠️ [공백 복원 강제 손절 거래소 주문 실패 - fallback 체결가 적용] {e}", flush=True)
-
-    # 엑셀 손절 마감 처리
+    cut_indices = []
+    cut_levels = []
     total_loss = 0.0
-    for c_idx in cut_indices:
-        b_px = float(df.loc[c_idx, "매수가"])
-        b_qty = float(df.loc[c_idx, "매수수량"])
-        b_fee = float(df.loc[c_idx, "수수료"]) if pd.notna(df.loc[c_idx, "수수료"]) else 0.0
-        pnl = (sell_px - b_px) * b_qty - b_fee
-        total_loss += pnl
-        df.loc[c_idx, "매도날짜"] = 지금()
-        df.loc[c_idx, "매도가"] = sell_px
-        df.loc[c_idx, "매도수량"] = b_qty
-        df.loc[c_idx, "매도금액"] = sell_px * b_qty
-        df.loc[c_idx, "실현손익"] = round(pnl, 4)
-        df.loc[c_idx, "수익률"] = round(((sell_px - b_px) / b_px) * 100.0, 4)
-        df.loc[c_idx, "청산유형"] = "공백복원손절"
+    K_cut = 0
+
+    # 5. 상위 차수 강제 손절 분기 실행
+    if should_cut:
+        K_cut = min(K_plan, len(미청산))
+        if K_cut > 0:
+            print(
+                f"🌪️ [공백 복원 롤다운 발동] {Ticker} | 직전가={P_prev:.4f} ➔ 체결가={rebase_px:.4f} "
+                f"| 공백={Gap_pct:.2f}% ({N}개) | {cut_decision_reason} | 상위 {K_cut}개 손절 청산 개시",
+                flush=True
+            )
+            # 안전장치: 엑셀 자동 스냅샷 백업
+            엑셀_스냅샷_백업(Ticker, file_name)
+
+            # 상위 K_cut개 차수 시장가 강제 손절 (reduceOnly)
+            손절대상 = 미청산.sort_values(by=["매수가"], ascending=False).iloc[:K_cut]
+            cut_indices = list(손절대상.index)
+            cut_levels = list(손절대상["차수"].values)
+            total_cut_qty = float(손절대상["매수수량"].sum())
+
+            sell_px = rebase_px
+            try:
+                sell_res = bitgetX.create_market_sell_order(
+                    symbol=Ticker, amount=total_cut_qty, params={"reduceOnly": True}
+                )
+                sell_px, sell_qty, sell_cost = 체결가_조회(
+                    Ticker, sell_res, fallback_price=rebase_px, fallback_qty=total_cut_qty
+                )
+            except Exception as e:
+                print(f"⚠️ [공백 복원 강제 손절 거래소 주문 실패 - fallback 체결가 적용] {e}", flush=True)
+
+            # 엑셀 손절 마감 처리
+            for c_idx in cut_indices:
+                b_px = float(df.loc[c_idx, "매수가"])
+                b_qty = float(df.loc[c_idx, "매수수량"])
+                b_fee = float(df.loc[c_idx, "수수료"]) if pd.notna(df.loc[c_idx, "수수료"]) else 0.0
+                pnl = (sell_px - b_px) * b_qty - b_fee
+                total_loss += pnl
+                df.loc[c_idx, "매도날짜"] = 지금()
+                df.loc[c_idx, "매도가"] = sell_px
+                df.loc[c_idx, "매도수량"] = b_qty
+                df.loc[c_idx, "매도금액"] = sell_px * b_qty
+                df.loc[c_idx, "실현손익"] = round(pnl, 4)
+                df.loc[c_idx, "수익률"] = round(((sell_px - b_px) / b_px) * 100.0, 4)
+                df.loc[c_idx, "청산유형"] = "공백복원손절"
+    else:
+        print(
+            f"🛡️ [공백 복원 무손절 유지] {Ticker} | 직전가={P_prev:.4f} ➔ 체결가={rebase_px:.4f} "
+            f"| 공백={Gap_pct:.2f}% ({N}개) | {cut_decision_reason} | 상위 차수 손절 0건 (보유분 100% 보존)",
+            flush=True
+        )
 
     # 6. 잔여 미청산 차수 Re-indexing (높은 매수가 순으로 1, 2... M 차수 부여)
     잔여 = df[df["매도날짜"].isnull()].copy()
@@ -1563,8 +1615,8 @@ def 쿨링공백복원_실행(
     for new_level, (r_idx, _) in enumerate(잔여_정렬.iterrows(), start=1):
         df.loc[r_idx, "차수"] = new_level
 
-    # 7. 바닥 Rebase 체결 차수 번호 확정 (M + K + 1 차수)
-    rebase_level = M + K + 1
+    # 7. 바닥 Rebase 체결 차수 번호 확정 (M + K_plan + 1 차수)
+    rebase_level = M + K_plan + 1
     new_row = pd.DataFrame([{
         "종목": Ticker,
         "차수": rebase_level,
@@ -1580,7 +1632,6 @@ def 쿨링공백복원_실행(
     매매기록저장(df, file_name)
 
     # 8. 바닥 체결가 바로 위 1차 동적 예약 목표가 산출 (P_prev와 0.7% 미만 근접 시 생략)
-    default_amount = float(trade_config[Ticker]["grid_config"].get(1, {}).get("매수금액", 143.0))
     first_target = round(rebase_px * (1.0 + interval_pct / 100.0), 6)
     safety_ceiling = P_prev * (1.0 - interval_pct / 100.0) if P_prev > 0 else 0.0
 
@@ -1598,12 +1649,12 @@ def 쿨링공백복원_실행(
             "amount_usdt": default_amount,
             "created_at": 지금().strftime("%Y-%m-%d %H:%M:%S")
         })
-        remaining_count = K
+        remaining_count = K_plan
 
     공백복원_상태저장(Ticker, {
         "orders": orders,
         "remaining_count": remaining_count,
-        "total_planned": K,
+        "total_planned": K_plan,
         "last_rebalance": 지금().strftime("%Y-%m-%d %H:%M:%S"),
         "base_price": rebase_px,
         "base_level": rebase_level,
@@ -1616,19 +1667,30 @@ def 쿨링공백복원_실행(
     # 9. 텔레그램 종합 리포트 발송
     try:
         title_sym = Ticker.split("/")[0]
-        cut_str = ", ".join([f"{lvl}차" for lvl in cut_levels])
+        if cut_levels:
+            cut_str = ", ".join([f"{lvl}차" for lvl in cut_levels])
+            cut_line = f"✂️ *상위 손절 마감*: `{len(cut_levels)}개` (`{cut_str}`)\n💰 *확정 손실*: `{total_loss:+.4f} USDT`\n"
+            action_title = "쿨링 공백 복원 롤다운 완료"
+        else:
+            cut_line = f"🛡️ *상위 손절*: `0개` ({cut_decision_reason})\n💰 *확정 손실*: `0.0000 USDT`\n"
+            action_title = "쿨링 공백 복원 예약망 가동(무손절)"
+
+        free_disp = f"`{free_usdt:.2f} USDT`" if free_usdt is not None else "`조회불가`"
+        funds_line = f"💵 *가용 잔고*: {free_disp} (필요 `{needed_funds:.2f} USDT`)\n"
+
         if orders:
-            targets_str = f"   · 1차 동적 예약가: `{first_target:.4f} USDT` (체결 시 실체결가 +{interval_pct}% 자동 재조정 / 총 {K}회 한도)"
+            targets_str = f"   · 1차 동적 예약가: `{first_target:.4f} USDT` (체결 시 실체결가 +{interval_pct}% 자동 재조정 / 총 {K_plan}회 한도)"
         else:
             targets_str = "   · 기준가 근접으로 예약 생략 (안전 종료)"
+
         msg = (
-            f"🌪️ *[{title_sym}_쿨링 공백 복원 롤다운 완료]*\n"
+            f"🌪️ *[{title_sym}_{action_title}]*\n"
             f"━━━━━━━━━━━━━━━\n"
             f"📊 *종목*: `{Ticker}`\n"
             f"📉 *공백 발생*: `{Gap_pct:.2f}%` (추정 공백 `{N}개 차수`)\n"
-            f"✂️ *상위 손절 마감*: `{len(cut_levels)}개` (`{cut_str}`)\n"
-            f"💰 *확정 손실*: `{total_loss:+.4f} USDT`\n"
-            f"🔄 *잔여 차수 재배치*: `1차 ~ {M}차` (총 {M}개 승계)\n"
+            f"{funds_line}"
+            f"{cut_line}"
+            f"🔄 *잔여 차수 유지*: `1차 ~ {M}차` (총 {M}개 보유)\n"
             f"⚓ *바닥 Rebase 체결*: `{rebase_level}차` (`{rebase_px:.4f} USDT`)\n"
             f"🕸️ *공백 복원 동적 예약 ({len(orders)}개 대기)*:\n{targets_str}\n"
             f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
@@ -1753,6 +1815,10 @@ def 비상_증거금확보_쿨링공백복원_실행(
     - 5단계: 잔여 차수 재배치(1~M) 및 텔레그램 종합 알림 발송.
     """
     if not GAP_RECONSTRUCTION_ENABLE:
+        return False
+
+    if GAP_CUT_MODE == "NEVER":
+        print(f"ℹ️ [비상 롤다운 스킵] {Ticker} GAP_CUT_MODE='NEVER' (손절 전면 금지) 설정으로 선손절 생략", flush=True)
         return False
 
     file_name = trade_config[Ticker]["file_name"]
@@ -4386,8 +4452,13 @@ def main_loop():
             f"→ `{BUY_COOLDOWN_PAUSE_SEC // 60}분` + 하이브리드 rebase (>A 즉시/≤A 저점반등)\n"
             if BUY_COOLDOWN_ENABLE else "🧊 쿨링: `비활성`\n"
         )
+        _gap_mode_desc = {
+            "AUTO_BY_FUNDS": "잔고충분시 무손절(자동)",
+            "ALWAYS"       : "무조건 손절",
+            "NEVER"        : "손절금지(무손절)",
+        }.get(GAP_CUT_MODE, GAP_CUT_MODE)
         gap_line = (
-            f"🌪️ 공백 복원: `활성 (v2.4 비상 자가치유 롤다운)` (최대 {MAX_GAP_CUT_LEVELS}개 손절 캡 + 바닥 {MAX_GAP_CUT_LEVELS}개 그물망)\n"
+            f"🌪️ 공백 복원: `활성 [모드: {GAP_CUT_MODE} ({_gap_mode_desc})]` (최대 {MAX_GAP_CUT_LEVELS}개 캡 + 그물망)\n"
             if GAP_RECONSTRUCTION_ENABLE else "🌪️ 공백 복원: `비활성`\n"
         )
         price_lines = ""
