@@ -517,7 +517,7 @@
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 전송 및 원격 구문 검증 완료
   - 프로세스 정상 재기동 및 텔레그램 알림, 실시간 매매 로그 정상 작동 확인
 
-## [2026-10-22 22:55] 업데이트 이력 (Commit ID: TBD)
+## [2026-10-22 22:55] 업데이트 이력 (Commit ID: ac84d8b)
 - **수정 내용**:
   - **`Grid_Bitget.py` 트레일링 매도 시 구글 스프레드시트 체결 로거 연동 매개변수 오류(`NameError`) 긴급 수정 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
     - **오류 원인 해소**: 실서버 운영 중 매도 청산 발생 시 `[SOXL/USDT:USDT 처리 오류] name '청산수량' is not defined` 예외가 발생하여 매도 체결 후 구글 시트 전송 단계에서 오류가 발생하던 현상 수정
