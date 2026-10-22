@@ -528,7 +528,7 @@
   - EC2 실서버 파일 배포 및 프로세스 안전 재기동(`pkill -15`) 확인
   - 실시간 로그 모니터링을 통해 `name '청산수량' is not defined` 오류 해소 및 정상 작동 확인
 
-## [2026-10-22 23:40] 업데이트 이력 (Commit ID: TBD)
+## [2026-10-22 23:40] 업데이트 이력 (Commit ID: 9a6ee0d)
 - **수정 내용**:
   - **`sheets_logger.py` 구글 스프레드시트 체결 및 자산 스냅샷 타임스탬프 한국 표준시(KST, UTC+9) 고정 적용 ([`sheets_logger.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/sheets_logger.py))**:
     - **문제점 해소**: EC2 실서버 환경이 기본 UTC 타임존으로 동작함에 따라, `datetime.now()` 호출 시 체결 일시 및 스냅샷 날짜가 9시간 느린 UTC 기준으로 구글 시트에 전송되던 문제 해결
