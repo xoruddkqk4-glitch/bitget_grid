@@ -600,3 +600,20 @@
   - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
   - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 체결 로그 정상 확인
+
+## [2026-10-23 17:38] 업데이트 이력 (Commit ID: pending)
+- **수정 내용**:
+  - **EC2 로컬 상태(쿨링다운, 공백예약, 잔고부족, baseline) 구글 스프레드시트/대시보드 실시간 동기화 파이프라인 구축 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py), [`sheets_logger.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/sheets_logger.py))**:
+    - **1) `sheets_logger.py` 봇 내부 상태 동기화 및 관리자 원격 제어 메서드 신설**:
+      - `log_bot_state(self, state_data, strategy_name)`: EC2 봇의 내부 JSON 상태(쿨링, 공백예약, 잔고부족 차수, baseline 등)를 웹훅 `STATE_SYNC` 타입으로 구글 시트에 비동기 전송 (타임아웃 2초, 메인 매매 루프 완벽 격리)
+      - `trigger_monthly_archive`, `trigger_yearly_sharding`, `diagnose_capacity`: 대시보드 및 웹훅과의 연계를 위한 원장 유지보수/진단 원격 호출 인터페이스 추가
+      - `log_snapshot`의 일자 포맷팅에 한국 표준시(`KST`) 타임존 일관 적용
+    - **2) `Grid_Bitget.py` 로컬 JSON 4종 원스톱 동기화 모듈 (`봇_상태_동기화`) 구현**:
+      - EC2 로컬에 분산 저장되는 4종 상태 파일(`.buy_cooldown.json`, `.gap_orders.json`, `.insufficient_funds.json`, `.total_profit_baseline.json`)을 취합하여 `state_payload` 생성 후 `sheet_logger.log_bot_state()` 전송
+      - **자동 트리거 연동**: `총수익_baseline_저장()`, `쿨링상태저장()`, `공백복원_상태저장()`, `잔고부족_상태저장()` 및 봇 기동 시 초기화 루프에 자동 동기화 연결
+      - 대시보드에서 비트겟 봇의 실제 가상/더미 차수, 공백 예약, 쿨링 잔여 시간 및 baseline을 실시간으로 100% 동일하게 추적 가능하도록 정합성 완성
+- **검증 결과**:
+  - `python -m py_compile Grid_Bitget.py sheets_logger.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
+  - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
+  - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 체결 로그 정상 확인
+

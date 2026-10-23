@@ -886,6 +886,10 @@ def 총수익_baseline_저장(
             f"사이클 {cycle_count}회차",
             flush=True,
         )
+        try:
+            봇_상태_동기화(Ticker)
+        except Exception:
+            pass
     except Exception as e:
         print(f"[총수익 baseline 저장 실패] {e}")
 
@@ -955,6 +959,10 @@ def 쿨링상태저장(Ticker: str, state: Dict[str, Any]):
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
         os.replace(tmp, path)
+        try:
+            봇_상태_동기화(Ticker)
+        except Exception:
+            pass
     except Exception as e:
         print(f"[쿨링상태 저장 실패] {e}")
 
@@ -1116,6 +1124,10 @@ def 공백복원_상태저장(Ticker: str, state: Dict[str, Any]):
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
         os.replace(tmp, path)
+        try:
+            봇_상태_동기화(Ticker)
+        except Exception:
+            pass
     except Exception as e:
         print(f"[공백복원 상태 저장 실패] {e}")
 
@@ -1162,6 +1174,10 @@ def 잔고부족_상태저장(Ticker: str, state: Dict[str, Any]) -> None:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
         os.replace(tmp, path)
+        try:
+            봇_상태_동기화(Ticker)
+        except Exception:
+            pass
     except Exception as e:
         print(f"[잔고부족 상태 저장 실패] {e}")
 
@@ -1279,6 +1295,30 @@ def 잔고부족_최근기록_여부(Ticker: str, 차수: int, cooldown_sec: int
     except Exception:
         pass
     return False
+
+def 봇_상태_동기화(Ticker: str):
+    """EC2 로컬 JSON 4종(쿨링상태, 공백예약, 잔고부족, baseline)을 구글 시트/대시보드로 원스톱 비동기 동기화"""
+    try:
+        if sheet_logger is None:
+            return
+        c_state = 쿨링상태로드(Ticker)
+        g_state = 공백복원_상태로드(Ticker)
+        i_state = 잔고부족_상태로드(Ticker)
+        baseline, cycle_count = 총수익_baseline_상태조회(Ticker)
+        
+        state_payload = {
+            "symbol": Ticker,
+            "buy_cooldown": c_state,
+            "gap_orders": g_state,
+            "insufficient_funds": i_state,
+            "total_profit_baseline": {
+                "baseline": baseline,
+                "cycle_count": cycle_count
+            }
+        }
+        sheet_logger.log_bot_state(state_payload, strategy_name="그리드")
+    except Exception as e:
+        print(f"[봇 상태 동기화 실패] {e}")
 
 def 최근_총매수시도_고유차수수(df: pd.DataFrame, Ticker: str, window_sec: int = 2400) -> int:
     """
@@ -4566,12 +4606,13 @@ def main_loop():
     except Exception as e:
         print(f"[시작 알림 실패] {e}")
 
-    # 종목별 엑셀 파일 초기화
+    # 종목별 엑셀 파일 초기화 및 내부 상태 최초 동기화
     for Ticker in 종목코드목록:
         try:
             initialize_excel_file(trade_config[Ticker]["file_name"])
+            봇_상태_동기화(Ticker)
         except Exception as e:
-            print(f"[파일 초기화 실패] {Ticker} / {e}")
+            print(f"[초기화/상태 동기화 실패] {Ticker} / {e}")
 
     last_heartbeat = time.time()
     consecutive_errors = 0
