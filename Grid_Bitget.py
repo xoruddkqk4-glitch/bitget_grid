@@ -1338,6 +1338,17 @@ def 더미매수_텔레그램알림(Ticker: str, 차수: int, 현재가: float, 
         )
         telegram_alert.SendMessage(msg)
         print(f"📢 [가상 매수 알림 전송] {Ticker} {차수}차 더미 기록 텔레그램 발송 완료", flush=True)
+        # ━━━━━━━━━━━━━━━ [구글 시트 연동 로거] ━━━━━━━━━━━━━━━
+        # 가상 매수 진입 기록 전송
+        sheet_logger.log_trade(
+            action="DUMMY_BUY",
+            symbol=Ticker,
+            level=f"{차수}차",
+            price=현재가,
+            amount=(필요금액 / 현재가) if 현재가 > 0 else 0.0,
+            note=f"가상 매수 진입 (더미 기록) - 가용 잔고 부족 ({간격_str})"
+        )
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     except Exception as e:
         print(f"⚠️ [가상 매수 텔레그램 발송 실패] {e}", flush=True)
 
@@ -1366,6 +1377,20 @@ def 더미매도_텔레그램알림(Ticker: str, 차수: int, entry_price: float
         )
         telegram_alert.SendMessage(msg)
         print(f"📢 [가상 매도 알림 전송] {Ticker} {차수}차 더미 청산 텔레그램 발송 완료", flush=True)
+        # ━━━━━━━━━━━━━━━ [구글 시트 연동 로거] ━━━━━━━━━━━━━━━
+        # 가상 매도 청산 기록 전송
+        sheet_logger.log_trade(
+            action="DUMMY_SELL",
+            symbol=Ticker,
+            level=f"{차수}차",
+            price=현재가,
+            amount=(매수금액 / entry_price) if entry_price > 0 else 0.0,
+            fee=0.0,
+            pnl=가상손익,
+            pnl_pct=수익률,
+            note=f"가상 매도 청산 (더미 청산) - 진입 {entry_price:.4f} → 청산 {현재가:.4f}"
+        )
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     except Exception as e:
         print(f"⚠️ [가상 매도 텔레그램 발송 실패] {e}", flush=True)
 
