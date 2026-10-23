@@ -601,7 +601,7 @@
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
   - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 체결 로그 정상 확인
 
-## [2026-10-23 17:38] 업데이트 이력 (Commit ID: pending)
+## [2026-10-23 17:38] 업데이트 이력 (Commit ID: d7f6e65)
 - **수정 내용**:
   - **EC2 로컬 상태(쿨링다운, 공백예약, 잔고부족, baseline) 구글 스프레드시트/대시보드 실시간 동기화 파이프라인 구축 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py), [`sheets_logger.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/sheets_logger.py))**:
     - **1) `sheets_logger.py` 봇 내부 상태 동기화 및 관리자 원격 제어 메서드 신설**:
