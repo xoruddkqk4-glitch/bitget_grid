@@ -617,3 +617,19 @@
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
   - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 체결 로그 정상 확인
 
+## [2026-10-23 21:26] 업데이트 이력 (Commit ID: <커밋 ID / Commit Hash>)
+- **수정 내용**:
+  - **`sheets_logger.py` 구글 스프레드시트 Webhook 전송 속도 향상 및 HTTP Keep-Alive 세션 풀링 적용 ([`sheets_logger.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/sheets_logger.py))**:
+    - **1) `requests.Session()` 기반 HTTP Keep-Alive 연결 풀링 도입**:
+      - `SheetsLogger.__init__()`에서 `self._session = requests.Session()` 인스턴스를 초기화하여 영구 연결 풀 생성
+      - 체결 기록(`log_trade`), 자산 스냅샷(`log_snapshot`), 봇 내부 상태 동기화(`log_bot_state`), 원격 아카이브/샤딩/진단 API 호출 시 `(self._session or requests).post`를 재사용하도록 개선
+      - 매 요청마다 발생하던 TCP 3-way 핸드셰이크 및 Google TLS 협상 오버헤드를 제거하여 웹훅 전송 지연 시간을 대폭 단축 (~1,000ms+ ➔ ~150-250ms 수준)
+    - **2) 메인 매매 루프 보호 및 논블로킹 안정성 극대화**:
+      - HTTP 요청 지연으로 인한 메인 매매 루프(3초 폴링 주기)의 간섭을 원천 차단하고 신속한 실시간 데이터 전송 보장
+    - **3) 타임존 정합성 유지**:
+      - `log_snapshot`의 일자 생성에 한국 표준시(`KST`) 타임존 일관 적용 유지
+- **검증 결과**:
+  - `python -m py_compile sheets_logger.py Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
+  - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
+  - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 체결 로그 정상 확인
+

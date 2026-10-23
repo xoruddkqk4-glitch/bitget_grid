@@ -44,6 +44,7 @@ class SheetsLogger:
         self.exchange = exchange
         self.timeout = timeout
         self.silent = silent
+        self._session = requests.Session() if requests is not None else None
 
     def log_trade(
         self,
@@ -101,7 +102,8 @@ class SheetsLogger:
         }
 
         try:
-            resp = requests.post(
+            http_client = self._session or requests
+            resp = http_client.post(
                 self.webhook_url,
                 json=payload,
                 headers={"Content-Type": "application/json"},
@@ -161,7 +163,8 @@ class SheetsLogger:
         }
 
         try:
-            resp = requests.post(
+            http_client = self._session or requests
+            resp = http_client.post(
                 self.webhook_url,
                 json=payload,
                 headers={"Content-Type": "application/json"},
@@ -190,7 +193,8 @@ class SheetsLogger:
         }
 
         try:
-            resp = requests.post(
+            http_client = self._session or requests
+            resp = http_client.post(
                 self.webhook_url,
                 json=payload,
                 headers={"Content-Type": "application/json"},
@@ -219,7 +223,8 @@ class SheetsLogger:
             }
         }
         try:
-            resp = requests.post(self.webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
+            http_client = self._session or requests
+            resp = http_client.post(self.webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
             if resp.status_code == 200:
                 return resp.json()
             return None
@@ -242,7 +247,8 @@ class SheetsLogger:
             }
         }
         try:
-            resp = requests.post(self.webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
+            http_client = self._session or requests
+            resp = http_client.post(self.webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
             if resp.status_code == 200:
                 return resp.json()
             return None
@@ -263,7 +269,8 @@ class SheetsLogger:
             "data": {}
         }
         try:
-            resp = requests.post(self.webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+            http_client = self._session or requests
+            resp = http_client.post(self.webhook_url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
             if resp.status_code == 200:
                 return resp.json()
             return None
