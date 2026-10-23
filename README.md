@@ -587,7 +587,7 @@
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
   - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 체결 로그 정상 확인
 
-## [2026-10-23 15:15] 업데이트 이력 (Commit ID: pending)
+## [2026-10-23 15:15] 업데이트 이력 (Commit ID: 1e7fb76)
 - **수정 내용**:
   - **구글 스프레드시트 체결 원장 연동 고도화 및 총수익 전체청산 체결 기록/대시보드 실시간 지표 동기화 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
     - **1) 총수익 목표 달성 전체청산 체결 시 구글 시트 원장 전송 누락 보완**:
