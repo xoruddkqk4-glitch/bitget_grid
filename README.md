@@ -617,7 +617,7 @@
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
   - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 체결 로그 정상 확인
 
-## [2026-10-23 21:26] 업데이트 이력 (Commit ID: <커밋 ID / Commit Hash>)
+## [2026-10-23 21:26] 업데이트 이력 (Commit ID: d932fcb)
 - **수정 내용**:
   - **`sheets_logger.py` 구글 스프레드시트 Webhook 전송 속도 향상 및 HTTP Keep-Alive 세션 풀링 적용 ([`sheets_logger.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/sheets_logger.py))**:
     - **1) `requests.Session()` 기반 HTTP Keep-Alive 연결 풀링 도입**:
