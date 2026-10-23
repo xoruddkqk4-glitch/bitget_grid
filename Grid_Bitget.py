@@ -2830,6 +2830,19 @@ def 총수익_체크_및_청산(Ticker: str, 현재가: float) -> bool:
             df.at[idx, "누적실현손익"] = 현재누적
             df.at[idx, "청산유형"] = "전체청산"
 
+            # [구글 시트 체결 기록 전송 추가]
+            sheet_logger.log_trade(
+                action="SELL",
+                symbol=Ticker,
+                level=f"{차수}차",
+                price=실제체결가,
+                amount=실제체결수량,
+                fee=수수료,
+                pnl=실현손익,
+                pnl_pct=수익률,
+                note=f"총수익 목표 달성 전체청산 | 미실현:0.0000 | 사이클:{사이클수익:+.4f} ({총수익_사이클회차_조회(Ticker)}회차)"
+            )
+
             print(
                 f"💸 [전체청산] {Ticker} 차수 {차수} | "
                 f"체결가 {실제체결가:.{PRICE_LOG_DECIMALS}f} | "
@@ -3409,14 +3422,23 @@ def 매수실행(Ticker: str, 현재가: float):
 
         telegram_alert.SendMessage(message)
 
-        # [구글 시트 체결 기록 전송 추가]
+        # [구글 시트 체결 기록 전송 추가] (대시보드 실시간 일치화 메트릭 동봉)
+        미실현_val, _, _, _, 사이클_val = 0.0, 0.0, 0.0, 0.0, 0.0
+        회차_val = 1
+        if TOTAL_PROFIT_TARGET_ENABLE:
+            try:
+                미실현_val, _, _, _, 사이클_val = 총수익_계산(Ticker, 현재가)
+                회차_val = 총수익_사이클회차_조회(Ticker)
+            except Exception as e:
+                print(f"[매수 시트전송 - 총수익 계산 실패] {e}")
+
         sheet_logger.log_trade(
             action="BUY",
             symbol=Ticker,
             level=f"{차수}차",
             price=실제체결가,
             amount=실제체결수량,
-            note=f"그리드 분할 매수 체결 (슬리피지 {매수슬리피지:+.4f}%)"
+            note=f"그리드 분할 매수 체결 (슬리피지 {매수슬리피지:+.4f}%) | 미실현:{미실현_val:+.4f} | 사이클:{사이클_val:+.4f} ({회차_val}회차)"
         )
 
         print(
@@ -3624,7 +3646,16 @@ def 매도실행(Ticker: str, 현재가: float, riding_mode: str = None) -> bool
 
         telegram_alert.SendMessage(message)
 
-        # [구글 시트 체결 기록 전송 추가]
+        # [구글 시트 체결 기록 전송 추가] (대시보드 실시간 일치화 메트릭 동봉)
+        미실현_val, _, _, _, 사이클_val = 0.0, 0.0, 0.0, 0.0, 0.0
+        회차_val = 1
+        if TOTAL_PROFIT_TARGET_ENABLE:
+            try:
+                미실현_val, _, _, _, 사이클_val = 총수익_계산(Ticker, 현재가)
+                회차_val = 총수익_사이클회차_조회(Ticker)
+            except Exception as e:
+                print(f"[매도 시트전송 - 총수익 계산 실패] {e}")
+
         sheet_logger.log_trade(
             action="SELL",
             symbol=Ticker,
@@ -3634,7 +3665,7 @@ def 매도실행(Ticker: str, 현재가: float, riding_mode: str = None) -> bool
             fee=수수료,
             pnl=실현손익,
             pnl_pct=수익률,
-            note=f"트레일링 익절 완료 (고점 {최고수익률:+.2f}%)"
+            note=f"트레일링 익절 완료 (고점 {최고수익률:+.2f}%) | 미실현:{미실현_val:+.4f} | 사이클:{사이클_val:+.4f} ({회차_val}회차)"
         )
 
         print(
