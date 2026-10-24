@@ -671,7 +671,7 @@
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
   - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 체결 로그 정상 확인
 
-## [2026-10-24 13:38] 업데이트 이력 (Commit ID: <커밋 ID / Commit Hash>)
+## [2026-10-24 13:38] 업데이트 이력 (Commit ID: d527dad)
 - **수정 내용**:
   - **`sheets_logger.py` 백그라운드 스레드 큐 및 로컬 Outbox 장애 복구 아키텍처 구축 ([`sheets_logger.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/sheets_logger.py))**:
     - **1) 논블로킹 백그라운드 스레드 큐 (`queue.Queue`, `threading.Thread`) 도입**:
