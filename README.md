@@ -633,7 +633,7 @@
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
   - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 체결 로그 정상 확인
 
-## [2026-10-24 11:04] 업데이트 이력 (Commit ID: <커밋 ID / Commit Hash>)
+## [2026-10-24 11:04] 업데이트 이력 (Commit ID: 7b4606c)
 - **수정 내용**:
   - **구글 스프레드시트 연동 보안 강화 및 공통 환경설정(`gsheet.env`) 분리 적용 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py), [`sheets_logger.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/sheets_logger.py))**:
     - **1) 소스 코드 내 민감정보(Webhook URL, Auth Token) 하드코딩 완전 제거**:
