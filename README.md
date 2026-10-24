@@ -633,3 +633,21 @@
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
   - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 체결 로그 정상 확인
 
+## [2026-10-24 11:04] 업데이트 이력 (Commit ID: <커밋 ID / Commit Hash>)
+- **수정 내용**:
+  - **구글 스프레드시트 연동 보안 강화 및 공통 환경설정(`gsheet.env`) 분리 적용 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py), [`sheets_logger.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/sheets_logger.py))**:
+    - **1) 소스 코드 내 민감정보(Webhook URL, Auth Token) 하드코딩 완전 제거**:
+      - `Grid_Bitget.py`의 `SheetsLogger` 초기화 시 직접 기재되었던 Google Apps Script 웹훅 URL 및 인증 토큰 제거
+      - 소스 코드 유출 및 Git 저장소 공개 시 발생할 수 있는 보안 취약점 원천 차단
+    - **2) `sheets_logger.py` 공통 환경설정 파일 로더(`_load_env_file`) 추가**:
+      - EC2 서버 공통 설정 파일(`/var/autobot/gsheet.env`)을 파싱하여 `os.environ`에 주입하는 기능 구현
+      - OS 환경변수(export) 우선순위 유지 및 중복 로딩 방지 플래그(`_ENV_LOADED`) 적용
+    - **3) 인증 토큰 검증 및 Webhook URL 보정 안전장치 구현**:
+      - 소스 코드 내 기본 토큰(`trading_secret_2026`)을 제거하고 `GSHEET_AUTH_TOKEN` 환경변수 주입 강제 (누락 시 경고 출력)
+      - `GSHEET_WEBHOOK_URL`에 Apps Script 배포 ID만 기재된 경우에도 표준 엔드포인트 URL(`https://script.google.com/macros/s/{ID}/exec`)로 자동 보정 처리
+    - **4) 타임존 정합성 유지**:
+      - `log_snapshot()` 일자 생성 시 한국 표준시(`KST`) 타임존 일관 적용 유지
+- **검증 결과**:
+  - `python -m py_compile sheets_logger.py Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
+  - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
+  - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 체결 로그 정상 확인
