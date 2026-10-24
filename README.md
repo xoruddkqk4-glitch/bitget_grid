@@ -651,3 +651,22 @@
   - `python -m py_compile sheets_logger.py Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
   - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 체결 로그 정상 확인
+
+## [2026-10-24 11:50] 업데이트 이력 (Commit ID: <커밋 ID / Commit Hash>)
+- **수정 내용**:
+  - **구글 스프레드시트 체결 로깅 일괄 전송(`BATCH_TRADES`) 도입 및 실시간 열린 차수(`open_lots`) 동기화 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py), [`sheets_logger.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/sheets_logger.py))**:
+    - **1) `sheets_logger.py` 체결 레코드 팩토리 및 일괄 전송 인터페이스 구현**:
+      - `make_trade_record()`: 체결 레코드 규격화 함수 (`trade_id`, `event`, `side`, `is_dummy`, `close_all` 등 메타데이터 지원)
+      - `log_trades_batch()`: 다건 체결을 단일 `BATCH_TRADES` HTTP POST 요청으로 일괄 전송하여 네트워크 오버헤드 및 블로킹 지연 원천 차단
+      - `log_trade()`: 중복 체결 응답(`duplicate`) 수신 시 성공(True)으로 처리하여 멱등성 보장
+    - **2) `Grid_Bitget.py` 실시간 보유 차수(`open_lots`) 스냅샷 동기화**:
+      - `_그리드_열린차수_스냅샷(Ticker)`: 엑셀 원장의 미청산 매수 행을 추출하여 `open_lots` 스냅샷 생성 후 구글 시트/대시보드 동기화 페이로드에 탑재
+      - `매수실행()` 및 `매도실행()` 직후 `봇_상태_동기화()` 자동 호출로 대시보드 표시 차수 실시간 즉시 갱신
+    - **3) 특수 이벤트 체결 누락 방지 및 전체 청산 배치 전송 연동**:
+      - `쿨링공백복원_실행` (손절 매도 `GAP_RESTORE_CUT`, 바닥 매수 `REBASE_BUY`), `비상_증거금확보_쿨링공백복원_실행`, `공백복원_예약매수_감시`(`GAP_RESERVE_BUY`)의 체결 기록 전송 체계화
+      - `총수익_체크_및_청산`: 루프 내 개별 HTTP 호출을 제거하고, 전체 청산 완료 후 `_그리드_체결_일괄전송`을 통해 1회 일괄 전송으로 주문 속도 극대화
+    - **4) 오타 수정**: 3-State 엔진 출력 라벨 내 오타 수정 (`괈지` ➔ `금지`)
+- **검증 결과**:
+  - `python -m py_compile sheets_logger.py Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
+  - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
+  - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 체결 로그 정상 확인

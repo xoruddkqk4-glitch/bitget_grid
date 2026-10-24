@@ -181,7 +181,7 @@ import signal
 import json
 from datetime import datetime, timedelta, timezone
 import copy
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, List
 
 import ccxt
 import pandas as pd
@@ -1295,8 +1295,60 @@ def 잔고부족_최근기록_여부(Ticker: str, 차수: int, cooldown_sec: int
         pass
     return False
 
+def _그리드_열린차수_스냅샷(Ticker: str) -> Optional[List[Dict[str, Any]]]:
+    """
+    엑셀 원장의 미청산(매도날짜 없음) 행을 [{level, price, qty, time}] 로 변환.
+    대시보드가 보유 차수를 '체결 로그 재구성' 대신 이 스냅샷 기준으로 표시한다.
+    읽기에 실패하면 None (서버는 기존 체결 기반 재구성으로 폴백).
+    """
+    try:
+        df = 매매기록불러오기(trade_config[Ticker]["file_name"])
+        open_df = df[df["매도날짜"].isnull()]
+        lots: List[Dict[str, Any]] = []
+        for _, r in open_df.sort_values(by=["차수"]).iterrows():
+            buy_time = r.get("매수날짜")
+            time_str = buy_time.strftime("%Y-%m-%d %H:%M:%S") if pd.notna(buy_time) else ""
+            lots.append({
+                "level": int(r["차수"]),
+                "price": round(float(r["매수가"]), 6),
+                "qty": round(float(r["매수수량"]), 6),
+                "time": time_str,
+            })
+        return lots
+    except Exception as e:
+        print(f"[열린 차수 스냅샷 생성 실패] {e}")
+        return None
+
+
+def _그리드_체결레코드(action: str, Ticker: str, level: int, price: float, amount: float,
+                       fee: float = 0.0, pnl: float = 0.0, pnl_pct: float = 0.0,
+                       note: str = "", event: str = "") -> Optional[Dict[str, Any]]:
+    """시트 전송용 체결 레코드 생성 (trade_id 포함). 로거가 없으면 None."""
+    if sheet_logger is None:
+        return None
+    try:
+        return sheet_logger.make_trade_record(
+            action=action, symbol=Ticker, level=f"{level}차", price=price, amount=amount,
+            fee=fee, pnl=pnl, pnl_pct=pnl_pct, note=note, event=event,
+            trade_id=f"grid-{event}-{level}-{int(time.time() * 1000)}",
+        )
+    except Exception as e:
+        print(f"[시트 체결 레코드 생성 실패] {e}")
+        return None
+
+
+def _그리드_체결_일괄전송(records: List[Optional[Dict[str, Any]]]) -> None:
+    """None 을 제외한 체결 레코드를 BATCH 로 한 번에 전송 (실패해도 매매 루프 영향 없음)"""
+    try:
+        recs = [r for r in records if r]
+        if recs and sheet_logger is not None:
+            sheet_logger.log_trades_batch(recs)
+    except Exception as e:
+        print(f"[시트 일괄 전송 실패] {e}")
+
+
 def 봇_상태_동기화(Ticker: str):
-    """EC2 로컬 JSON 4종(쿨링상태, 공백예약, 잔고부족, baseline)을 구글 시트/대시보드로 원스톱 비동기 동기화"""
+    """EC2 로컬 JSON 4종(쿨링상태, 공백예약, 잔고부족, baseline)과 보유 차수 스냅샷을 구글 시트/대시보드로 동기화"""
     try:
         if sheet_logger is None:
             return
@@ -1315,6 +1367,9 @@ def 봇_상태_동기화(Ticker: str):
                 "cycle_count": cycle_count
             }
         }
+        open_lots = _그리드_열린차수_스냅샷(Ticker)
+        if open_lots is not None:
+            state_payload["open_lots"] = open_lots
         sheet_logger.log_bot_state(state_payload, strategy_name="그리드")
     except Exception as e:
         print(f"[봇 상태 동기화 실패] {e}")
@@ -1620,6 +1675,7 @@ def 쿨링공백복원_실행(
     cut_indices = []
     cut_levels = []
     total_loss = 0.0
+    cut_records: List[Optional[Dict[str, Any]]] = []  # 시트 전송용 손절 체결 (엑셀 저장 후 일괄 전송)
     K_cut = 0
 
     # 5. 상위 차수 강제 손절 분기 실행
@@ -1658,6 +1714,7 @@ def 쿨링공백복원_실행(
                 b_fee = float(df.loc[c_idx, "수수료"]) if pd.notna(df.loc[c_idx, "수수료"]) else 0.0
                 pnl = (sell_px - b_px) * b_qty - b_fee
                 total_loss += pnl
+                cut_level_no = int(df.loc[c_idx, "차수"])  # 재정렬 전(체결 당시) 차수
                 df.loc[c_idx, "매도날짜"] = 지금()
                 df.loc[c_idx, "매도가"] = sell_px
                 df.loc[c_idx, "매도수량"] = b_qty
@@ -1665,6 +1722,11 @@ def 쿨링공백복원_실행(
                 df.loc[c_idx, "실현손익"] = round(pnl, 4)
                 df.loc[c_idx, "수익률"] = round(((sell_px - b_px) / b_px) * 100.0, 4)
                 df.loc[c_idx, "청산유형"] = "공백복원손절"
+                cut_records.append(_그리드_체결레코드(
+                    "SELL", Ticker, cut_level_no, sell_px, b_qty, fee=b_fee, pnl=round(pnl, 4),
+                    pnl_pct=round(((sell_px - b_px) / b_px) * 100.0, 4),
+                    note="공백 복원 상위 차수 손절", event="GAP_RESTORE_CUT"
+                ))
     else:
         print(
             f"🛡️ [공백 복원 무손절 유지] {Ticker} | 직전가={P_prev:.4f} ➔ 체결가={rebase_px:.4f} "
@@ -1694,6 +1756,13 @@ def 쿨링공백복원_실행(
     }])
     df = pd.concat([df, new_row], ignore_index=True)
     매매기록저장(df, file_name)
+
+    # 구글 시트 전송: 손절 매도 + 바닥 Rebase 매수 (엑셀 저장 직후, 실패해도 매매 영향 없음)
+    cut_records.append(_그리드_체결레코드(
+        "BUY", Ticker, rebase_level, rebase_px, rebase_qty,
+        pnl=0.0, note=f"바닥 Rebase 매수 (슬리피지 {rebase_slip:+.4f}%)", event="REBASE_BUY"
+    ))
+    _그리드_체결_일괄전송(cut_records)
 
     # 8. 바닥 체결가 바로 위 1차 동적 예약 목표가 산출 (P_prev와 0.7% 미만 근접 시 생략)
     first_target = round(rebase_px * (1.0 + interval_pct / 100.0), 6)
@@ -1951,12 +2020,18 @@ def 비상_증거금확보_쿨링공백복원_실행(
 
     # 엑셀 손절 마감 처리
     total_loss = 0.0
+    cut_records: List[Optional[Dict[str, Any]]] = []  # 시트 전송용 손절 체결
     for c_idx in cut_indices:
         b_px = float(df.loc[c_idx, "매수가"])
         b_qty = float(df.loc[c_idx, "매수수량"])
         b_fee = float(df.loc[c_idx, "수수료"]) if pd.notna(df.loc[c_idx, "수수료"]) else 0.0
         pnl = (sell_px - b_px) * b_qty - b_fee
         total_loss += pnl
+        cut_records.append(_그리드_체결레코드(
+            "SELL", Ticker, int(df.loc[c_idx, "차수"]), sell_px, b_qty, fee=b_fee, pnl=round(pnl, 4),
+            pnl_pct=round(((sell_px - b_px) / b_px) * 100.0, 4),
+            note="증거금 고갈 비상 롤다운 손절", event="GAP_RESTORE_CUT"
+        ))
         df.loc[c_idx, "매도날짜"] = 지금()
         df.loc[c_idx, "매도가"] = sell_px
         df.loc[c_idx, "매도수량"] = b_qty
@@ -1967,6 +2042,7 @@ def 비상_증거금확보_쿨링공백복원_실행(
 
     # 손절 후 원장 저장 (손절 확정)
     매매기록저장(df, file_name)
+    _그리드_체결_일괄전송(cut_records)  # 손절 체결을 시트로 즉시 전송 (이후 단계가 실패해도 손절 기록 보존)
     time.sleep(0.5)
 
     # 6. [후(後) 실체결] 손절로 확보된 가용 현금/증거금으로 바닥 Rebase 실제 시장가 매수
@@ -2013,6 +2089,12 @@ def 비상_증거금확보_쿨링공백복원_실행(
     }])
     df = pd.concat([df, new_row], ignore_index=True)
     매매기록저장(df, file_name)
+
+    # 구글 시트 전송: 바닥 Rebase 실체결 매수
+    _그리드_체결_일괄전송([_그리드_체결레코드(
+        "BUY", Ticker, rebase_level, 실제체결가, 실제체결수량,
+        pnl=0.0, note=f"비상 롤다운 바닥 Rebase 매수 (슬리피지 {매수슬리피지:+.4f}%)", event="REBASE_BUY"
+    )])
 
     # 9. 바닥 실제체결가(P_real_fill) 기준 동적 예약 목표가 산출 (+0.7%)
     default_amount = float(trade_config[Ticker]["grid_config"].get(1, {}).get("매수금액", 143.0))
@@ -2160,6 +2242,12 @@ def 공백복원_예약매수_감시(Ticker: str, 현재가: float) -> bool:
     # 기존 행들의 차수는 절대로 덮어쓰지 않고 새 행만 추가!
     df = pd.concat([df, temp_row], ignore_index=True)
     매매기록저장(df, file_name)
+
+    # 구글 시트 전송: 공백 예약 매수 체결
+    _그리드_체결_일괄전송([_그리드_체결레코드(
+        "BUY", Ticker, assigned_level, 실제체결가, 실제수량,
+        pnl=0.0, note=f"공백 예약 매수 체결 (슬리피지 {매수슬리피지:+.4f}%)", event="GAP_RESERVE_BUY"
+    )])
 
     # 2) ── [동적 재조정: Dynamic Retargeting] 실제 체결가 기준으로 다음 목표가 재산출 ──
     rem_count = int(state.get("remaining_count", 1)) - 1
@@ -2829,6 +2917,8 @@ def 총수익_체크_및_청산(Ticker: str, 현재가: float) -> bool:
         # 미청산 포지션 없는데 수익 목표 도달 (거의 누적실현만으로) → 락만 걸고 종료
         print(f"ℹ️ 미청산 포지션 없음. 누적실현만으로 목표 도달.")
     else:
+        전체청산_레코드: List[Optional[Dict[str, Any]]] = []
+        청산_회차 = 총수익_사이클회차_조회(Ticker)
         for idx, row in 미청산.sort_values(by=["차수"], ascending=False).iterrows():
             차수 = int(row["차수"])
             매수가 = float(row["매수가"])
@@ -2869,18 +2959,12 @@ def 총수익_체크_및_청산(Ticker: str, 현재가: float) -> bool:
             df.at[idx, "누적실현손익"] = 현재누적
             df.at[idx, "청산유형"] = "전체청산"
 
-            # [구글 시트 체결 기록 전송 추가]
-            sheet_logger.log_trade(
-                action="SELL",
-                symbol=Ticker,
-                level=f"{차수}차",
-                price=실제체결가,
-                amount=실제체결수량,
-                fee=수수료,
-                pnl=실현손익,
-                pnl_pct=수익률,
-                note=f"총수익 목표 달성 전체청산 | 미실현:0.0000 | 사이클:{사이클수익:+.4f} ({총수익_사이클회차_조회(Ticker)}회차)"
-            )
+            # [구글 시트 체결 기록] 청산이 모두 끝난 뒤 BATCH 로 한 번에 전송 (루프 중 HTTP 지연 제거)
+            전체청산_레코드.append(_그리드_체결레코드(
+                "SELL", Ticker, 차수, 실제체결가, 실제체결수량, fee=수수료, pnl=실현손익, pnl_pct=수익률,
+                note=f"총수익 목표 달성 전체청산 | 미실현:0.0000 | 사이클:{사이클수익:+.4f} ({청산_회차}회차)",
+                event="TOTAL_PROFIT_CLEAR"
+            ))
 
             print(
                 f"💸 [전체청산] {Ticker} 차수 {차수} | "
@@ -2894,6 +2978,7 @@ def 총수익_체크_및_청산(Ticker: str, 현재가: float) -> bool:
             총_청산_손익 += 실현손익
 
         매매기록저장(df, file_name)
+        _그리드_체결_일괄전송(전체청산_레코드)
         # 전체 청산 시 공백 복원 예약 주문 상태 파일도 깔끔히 초기화
         공백복원_상태클리어(Ticker)
 
@@ -3479,6 +3564,7 @@ def 매수실행(Ticker: str, 현재가: float):
             amount=실제체결수량,
             note=f"그리드 분할 매수 체결 (슬리피지 {매수슬리피지:+.4f}%) | 미실현:{미실현_val:+.4f} | 사이클:{사이클_val:+.4f} ({회차_val}회차)"
         )
+        봇_상태_동기화(Ticker)  # 보유 차수 스냅샷(open_lots) 갱신
 
         print(
             f"✅ 매수 완료 - {Ticker} 차수 {차수} | "
@@ -3706,6 +3792,7 @@ def 매도실행(Ticker: str, 현재가: float, riding_mode: str = None) -> bool
             pnl_pct=수익률,
             note=f"트레일링 익절 완료 (고점 {최고수익률:+.2f}%) | 미실현:{미실현_val:+.4f} | 사이클:{사이클_val:+.4f} ({회차_val}회차)"
         )
+        봇_상태_동기화(Ticker)  # 보유 차수 스냅샷(open_lots) 갱신
 
         print(
             f"💸 매도 완료 - {Ticker} 차수 {차수} | "
@@ -4507,7 +4594,7 @@ def main_loop():
         _sell_mode_label = {
             "STAGE1_ONLY": "0.7% 보존선 하회 시만 매도",
             "ALL"        : "1단계+2단계 모두 허용",
-            "OFF"        : "100% 홀딩 (모든 매도 괈지)",
+            "OFF"        : "100% 홀딩 (모든 매도 금지)",
         }.get(TREND_RIDING_SELL_MODE, TREND_RIDING_SELL_MODE)
         print(f"   - 3-State 엔진: 활성화 (일봉+4시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% MTF 지지선 이탈 필터)")
         print(f"   - 라이딩 중 매도: [{TREND_RIDING_SELL_MODE}] {_sell_mode_label}")
