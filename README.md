@@ -652,7 +652,7 @@
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
   - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 체결 로그 정상 확인
 
-## [2026-10-24 11:50] 업데이트 이력 (Commit ID: <커밋 ID / Commit Hash>)
+## [2026-10-24 11:50] 업데이트 이력 (Commit ID: f8f3c39)
 - **수정 내용**:
   - **구글 스프레드시트 체결 로깅 일괄 전송(`BATCH_TRADES`) 도입 및 실시간 열린 차수(`open_lots`) 동기화 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py), [`sheets_logger.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/sheets_logger.py))**:
     - **1) `sheets_logger.py` 체결 레코드 팩토리 및 일괄 전송 인터페이스 구현**:
