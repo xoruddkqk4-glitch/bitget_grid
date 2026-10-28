@@ -397,17 +397,29 @@ TREND_EXIT_BUFFER_PCT = 0.5
 MA_CACHE_SECONDS = 30       # 일봉 캐시 30초
 MA_4H_CACHE_SECONDS = 15    # 4시간봉 캐시 15초
 
-# 📌 TREND_RIDING_SELL_MODE = "STAGE1_ONLY"
+# 📌 TREND_RIDING_SELL_MODE = "OFF"
 # - 추세 라이딩(상태 2) 중 매도 허용 범위를 결정합니다.
-# - "STAGE1_ONLY" (권장):
-#     우상향 중인 차수는 100% 홀딩하여 추세를 끝까지 타되,
-#     수익률이 +TRAIL_STAGE1_PCT(0.7%) 이상 도달 후 그 이하로 반락하는 차수만
-#     '이익 보존 매도'를 실행하여 수익 반납 원천 차단.
+# - "OFF" (기본값/권장):
+#     상승 추세 라이딩 중에는 매도 100% 전면 금지 (0.7% 이하로 내려가도 홀딩 유지).
+#     추세 라이딩이 종료되면 TREND_RIDING_EXIT_SELL_MODE 설정에 따라 해당 시점 기준으로 매도 여부를 확인합니다.
+# - "STAGE1_ONLY":
+#     우상향 중인 차수는 홀딩하되, 수익률이 +TRAIL_STAGE1_PCT(0.7%) 이상 도달 후
+#     그 이하로 반락하는 차수만 '이익 보존 매도' 실행.
 # - "ALL":
 #     1단계(0.7% 보존선) 및 2단계(0.9% 이상 도달 후 고점 대비 -0.2%p 하락) 모두 매도 허용.
-# - "OFF":
-#     기존 방식 (5MA 지지선 이탈 전까지 매도 100% 전면 금지, 무조건 홀딩).
-TREND_RIDING_SELL_MODE = "STAGE1_ONLY"  # "STAGE1_ONLY" | "ALL" | "OFF"
+TREND_RIDING_SELL_MODE = "OFF"  # "OFF" | "STAGE1_ONLY" | "ALL"
+
+# 📌 TREND_RIDING_EXIT_SELL_MODE = "TRAILING"
+# - 추세 라이딩 종료(5MA -0.5% 동시 이탈) 시점에 보유 차수들의 매도 처리 방식을 결정합니다.
+# - "TRAILING" (기본값/권장 — 기존 2단계 트레일링 매도와 일관성 유지):
+#     종료 시점의 수익률을 새로운 고점(최고수익률) 기준으로 재설정한 뒤 2단계 트레일링 적용:
+#       · +0.9%(TRAIL_STAGE2_PCT) 이상: 2단계 트레일링 활성화 (고점 대비 -0.2% 하락 시 매도, 추가 상승 시 고점 갱신)
+#       · +0.7% ~ +0.9% 미만: 1단계 보존선(+0.7%) 활성화 (+0.7% 이하 하회 시 매도, +0.9% 돌파 시 2단계 전환)
+#       · +0.7% 미만: 이전 고점 기록 초기화 후 홀딩 (추후 +0.7% 도달 시 트레일링 작동)
+# - "IMMEDIATE":
+#     종료 시점에 수익률이 +0.7%(TRAIL_STAGE1_PCT) 이상인 차수는 즉시 시장가 익절 매도하고,
+#     +0.7% 미만인 차수는 이전 고점 기록을 초기화한 뒤 일반 트레일링으로 전환.
+TREND_RIDING_EXIT_SELL_MODE = "TRAILING"  # "TRAILING" | "IMMEDIATE"
 
 
 # --- 트레일링 매도 설정 (2단계 하이브리드) ---
@@ -3107,6 +3119,45 @@ def 최근_RSI(Ticker: str, timeframe: str = "5m", period: int = 14) -> float:
 _ma5_cache: Dict[str, Dict[str, dict]] = {}
 _trend_riding_state: Dict[str, dict] = {}
 
+def _trend_riding_state_path(Ticker: str) -> str:
+    """추세 라이딩 상태 파일 경로 (재기동 후에도 라이딩 상태 영속 유지)"""
+    safe = Ticker.replace("/", "_").replace(":", "_")
+    base_dir = "/var/autobot/bitget_grid" if os.path.exists("/var/autobot/bitget_grid") else "."
+    return os.path.join(base_dir, f".{safe}_trend_riding.json")
+
+def 추세라이딩_상태로드(Ticker: str) -> dict:
+    """메모리 캐시 우선 조회, 최초 호출 시 로컬 JSON 상태 파일에서 복원"""
+    if Ticker in _trend_riding_state:
+        return _trend_riding_state[Ticker]
+    default_state = {"is_riding": False, "entered_at": 0.0}
+    path = _trend_riding_state_path(Ticker)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and "is_riding" in data:
+                default_state["is_riding"] = bool(data.get("is_riding", False))
+                default_state["entered_at"] = float(data.get("entered_at", 0.0) or 0.0)
+        except Exception as e:
+            print(f"[추세라이딩 상태 로드 실패] {e}")
+    _trend_riding_state[Ticker] = default_state
+    return default_state
+
+def 추세라이딩_상태저장(Ticker: str, state: dict) -> None:
+    """추세 라이딩 상태 메모리 및 로컬 JSON 원자적(Atomic) 저장"""
+    _trend_riding_state[Ticker] = state
+    try:
+        path = _trend_riding_state_path(Ticker)
+        base_dir = os.path.dirname(path)
+        if base_dir and not os.path.exists(base_dir):
+            os.makedirs(base_dir, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except Exception as e:
+        print(f"[추세라이딩 상태 저장 실패] {e}")
+
 def 이동평균_조회(Ticker: str, timeframe: str = "1d") -> Tuple[float, float, bool]:
     """
     지정 타임프레임(1d, 4h)의 5선(MA5) 계산 및 캐싱
@@ -3169,7 +3220,7 @@ def 추세라이딩_상태체크(Ticker: str, 현재가: float) -> Tuple[bool, b
        - 1단계 및 2단계 동시 이탈 시 상태 2 종료 -> 방금_꺾임=True 반환 (청산/수비 검사 진입)
     """
     now = time.time()
-    state = _trend_riding_state.setdefault(Ticker, {"is_riding": False, "entered_at": 0.0})
+    state = 추세라이딩_상태로드(Ticker)
     ma_1d_today, ma_1d_yesterday, rising_1d = 이동평균_조회(Ticker, timeframe=MA_TIMEFRAME_1D)
     title_symbol = Ticker.split('/')[0]
 
@@ -3180,6 +3231,7 @@ def 추세라이딩_상태체크(Ticker: str, 현재가: float) -> Tuple[bool, b
         if rising_1d and ma_1d_today > 0 and 현재가 >= ma_1d_today:
             state["is_riding"] = True
             state["entered_at"] = now
+            추세라이딩_상태저장(Ticker, state)
             msg = (
                 f"🚀 *[{title_symbol}_추세 라이딩 진입]*\n"
                 f"━━━━━━━━━━━━━━━\n"
@@ -3214,6 +3266,36 @@ def 추세라이딩_상태체크(Ticker: str, 현재가: float) -> Tuple[bool, b
                 if 현재가 < 이탈기준_4h:
                     state["is_riding"] = False
                     state["entered_at"] = 0.0
+                    추세라이딩_상태저장(Ticker, state)
+                    사이클_라인 = ""
+                    if TOTAL_PROFIT_TARGET_ENABLE:
+                        try:
+                            _, _, _, _, 사이클_val = 총수익_계산(Ticker, 현재가)
+                            사이클_라인 = f"💰 *사이클 순익*: `{사이클_val:+.4f} USDT` (목표 {TOTAL_PROFIT_TARGET_USDT} USDT)\n"
+                        except Exception:
+                            pass
+                    _exit_action_desc = (
+                        f"종료 시점 기준 트레일링 가동 (1차+{TRAIL_STAGE1_PCT}% 보존 / 2차+{TRAIL_STAGE2_PCT}% 고점-{TRAIL_DISTANCE_PCT}%)"
+                        if TREND_RIDING_EXIT_SELL_MODE == "TRAILING"
+                        else f"종료 시점 기준 +{TRAIL_STAGE1_PCT}% 이상 차수 즉시 매도 및 그리드 매도 재개"
+                    )
+                    exit_msg = (
+                        f"🛑 *[{title_symbol}_추세 라이딩 종료]*\n"
+                        f"━━━━━━━━━━━━━━━\n"
+                        f"📊 *종목*: `{Ticker}`\n"
+                        f"📉 *일봉 5MA*: 이탈 (`{현재가:.4f} < {이탈기준_1d:.4f}`, 5MA `{ma_1d_today:.4f}`)\n"
+                        f"📉 *4시간 5MA*: 이탈 (`{현재가:.4f} < {이탈기준_4h:.4f}`, 5MA `{ma_4h_today:.4f}`)\n"
+                        f"📌 *현재가*: `{현재가:.4f} USDT`\n"
+                        f"🛡️ *종료 조건*: 일봉 및 4시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% 동시 이탈 충족\n"
+                        f"{사이클_라인}"
+                        f"🔄 *후속 조치*: {_exit_action_desc}\n"
+                        f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
+                        f"━━━━━━━━━━━━━━━"
+                    )
+                    try:
+                        telegram_alert.SendMessage(exit_msg)
+                    except Exception as e:
+                        print(f"[추세 라이딩 종료 알림 오류] {e}")
                     print(
                         f"📉 [{title_symbol}] 일봉/4시간봉 5MA 지지선(-{TREND_EXIT_BUFFER_PCT}%) 동시 이탈 감지 "
                         f"(현재가 {현재가:.4f} < 일봉기준 {이탈기준_1d:.4f} & 4시간기준 {이탈기준_4h:.4f}) -> 추세 라이딩 종료",
@@ -3605,7 +3687,7 @@ def 매수실행(Ticker: str, 현재가: float):
 # ===============================
 # 매도 실행 함수
 # ===============================
-def 매도실행(Ticker: str, 현재가: float, riding_mode: str = None) -> bool:
+def 매도실행(Ticker: str, 현재가: float, riding_mode: str = None, exit_riding: bool = False) -> bool:
     """
     그리드 매도 로직
     - TRAILING_ENABLE: 2단계 하이브리드 트레일링
@@ -3616,6 +3698,11 @@ def 매도실행(Ticker: str, 현재가: float, riding_mode: str = None) -> bool
       · None     : 일반 그리드 모드 (TRAILING_ENABLE 기준 그대로 적용)
       · "STAGE1_ONLY": 라이딩 중, 최고수익률이 +0.7% 이상 찍은 차수가 +0.7% 이하로 하회 시에만 매도
       · "ALL"    : 라이딩 중, 1단계(0.7%) + 2단계(고점-0.2%) 모두 허용
+    - exit_riding: 추세 라이딩 방금 종료(방금_꺾임=True) 시점 여부
+      · True 일 때: 이전 고점 기록(최고수익률)을 종료 시점(현재가) 수익률로 재설정한 뒤,
+        TREND_RIDING_EXIT_SELL_MODE에 따라 처리:
+        - "TRAILING": 종료 시점 수익률을 새 고점으로 삼아 2단계 트레일링(1차 +0.7% 보존 / 2차 +0.9% 이상 고점 -0.2% 매도) 적용
+        - "IMMEDIATE": 종료 시점 수익률이 +0.7% 이상인 차수는 즉시 익절 매도, 미만은 고점 초기화 후 홀딩
     - 한 폴링에서 여러 차수가 동시에 청산될 수 있음
     - 반환값: 매도 발생 시 True (이번 폴링에서 매수는 스킵)
     """
@@ -3634,7 +3721,7 @@ def 매도실행(Ticker: str, 현재가: float, riding_mode: str = None) -> bool
     청산된_포지션수 = 0
     title_symbol = Ticker.split('/')[0]
     매도발생 = False
-    고점갱신됨 = False
+    미저장_고점변경 = False
 
     누적_추적기 = 직전누적실현손익(df)
 
@@ -3655,17 +3742,33 @@ def 매도실행(Ticker: str, 현재가: float, riding_mode: str = None) -> bool
             기존고점 = float(raw_peak) if raw_peak is not None and pd.notna(raw_peak) else 0.0
         except (TypeError, ValueError, KeyError):
             기존고점 = 0.0
-        최고수익률 = max(기존고점, 현재수익률)
-        if 최고수익률 != 기존고점:
-            df.at[idx, "최고수익률"] = round(최고수익률, 4)
-            고점갱신됨 = True
+
+        if exit_riding:
+            # 추세 라이딩 종료 시점: 이전(라이딩 전/중) 고점 기록을 무시하고 현재 시점 기준으로 재설정
+            최고수익률 = max(0.0, 현재수익률)
+            if round(최고수익률, 4) != round(기존고점, 4):
+                df.at[idx, "최고수익률"] = round(최고수익률, 4)
+                미저장_고점변경 = True
+        else:
+            최고수익률 = max(기존고점, 현재수익률)
+            if 최고수익률 != 기존고점:
+                df.at[idx, "최고수익률"] = round(최고수익률, 4)
+                미저장_고점변경 = True
 
         매도조건 = False
         트레일매도선 = 0.0
         트레일단계 = 0
         라이딩_보존매도 = False  # 라이딩 중 이익 보존 매도 여부 플래그
+        라이딩종료_즉시매도 = False  # 추세 라이딩 종료 시점 +0.7% 이상 즉시 매도 플래그
         if TRAILING_ENABLE:
-            if 최고수익률 >= TRAIL_STAGE2_PCT:
+            if exit_riding and TREND_RIDING_EXIT_SELL_MODE == "IMMEDIATE":
+                # IMMEDIATE 모드: 추세 라이딩 종료 시점에 현재 수익률이 +0.7%(TRAIL_STAGE1_PCT) 이상이면 즉시 익절 매도
+                if 현재수익률 >= TRAIL_STAGE1_PCT:
+                    트레일단계 = 1
+                    트레일매도선 = TRAIL_STAGE1_PCT
+                    매도조건 = True
+                    라이딩종료_즉시매도 = True
+            elif 최고수익률 >= TRAIL_STAGE2_PCT:
                 # 2단계: 0.9% 이상 도달 후 다이내믹 트레일링 (고점 - 0.2%)
                 트레일단계 = 2
                 트레일매도선 = 최고수익률 - TRAIL_DISTANCE_PCT
@@ -3725,9 +3828,12 @@ def 매도실행(Ticker: str, 현재가: float, riding_mode: str = None) -> bool
         df.at[idx, "누적실현손익"] = 현재누적손익
         df.at[idx, "청산유형"] = "그리드익절"
         매매기록저장(df, file_name)
+        미저장_고점변경 = False
 
         if TRAILING_ENABLE:
-            if 라이딩_보존매도:
+            if 라이딩종료_즉시매도:
+                단계_태그 = "라이딩종료-즉시익절"
+            elif 라이딩_보존매도:
                 단계_태그 = "1차-라이딩보존"
             elif 트레일단계 > 0:
                 단계_태그 = f"{트레일단계}차"
@@ -3823,7 +3929,7 @@ def 매도실행(Ticker: str, 현재가: float, riding_mode: str = None) -> bool
         except Exception as e:
             print(f"⚠️ [공백 복원 매도 연동 오류] {e}", flush=True)
 
-    if 고점갱신됨 and not 매도발생:
+    if 미저장_고점변경:
         매매기록저장(df, file_name)
 
     if 청산된_포지션수 >= 2:
@@ -4596,8 +4702,13 @@ def main_loop():
             "ALL"        : "1단계+2단계 모두 허용",
             "OFF"        : "100% 홀딩 (모든 매도 금지)",
         }.get(TREND_RIDING_SELL_MODE, TREND_RIDING_SELL_MODE)
+        _exit_sell_label = {
+            "TRAILING" : f"종료 시점 기준 2단계 트레일링 (+{TRAIL_STAGE1_PCT}% 보존 / +{TRAIL_STAGE2_PCT}% 고점-{TRAIL_DISTANCE_PCT}%)",
+            "IMMEDIATE": f"종료 시점 +{TRAIL_STAGE1_PCT}% 이상 즉시 익절",
+        }.get(TREND_RIDING_EXIT_SELL_MODE, TREND_RIDING_EXIT_SELL_MODE)
         print(f"   - 3-State 엔진: 활성화 (일봉+4시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% MTF 지지선 이탈 필터)")
         print(f"   - 라이딩 중 매도: [{TREND_RIDING_SELL_MODE}] {_sell_mode_label}")
+        print(f"   - 라이딩 종료 시 매도: [{TREND_RIDING_EXIT_SELL_MODE}] {_exit_sell_label}")
     else:
         print(f"   - 3-State 엔진: 비활성화 (기존 그리드)")
     print(f"   - 종목: {종목코드목록}", flush=True)
@@ -4620,9 +4731,14 @@ def main_loop():
             "ALL"        : f"1/2단계 트레일링 전체 허용",
             "OFF"        : f"100% 홀딩 (매도 전면 금지)",
         }.get(TREND_RIDING_SELL_MODE, TREND_RIDING_SELL_MODE)
+        _exit_sell_desc = {
+            "TRAILING" : f"종료 시점 기준 트레일링 (1차+{TRAIL_STAGE1_PCT}% / 2차+{TRAIL_STAGE2_PCT}% 고점-{TRAIL_DISTANCE_PCT}%)",
+            "IMMEDIATE": f"종료 시점 +{TRAIL_STAGE1_PCT}% 이상 즉시 익절",
+        }.get(TREND_RIDING_EXIT_SELL_MODE, TREND_RIDING_EXIT_SELL_MODE)
         trend_line = (
             f"🚀 3-State 엔진: `일봉+4시간봉 5MA MTF 추세 라이딩` (이탈: -{TREND_EXIT_BUFFER_PCT}% 동시하회)\n"
             f"🔄 라이딩 중 매도: `[{TREND_RIDING_SELL_MODE}] {_sell_mode_desc}`\n"
+            f"🏁 라이딩 종료 매도: `[{TREND_RIDING_EXIT_SELL_MODE}] {_exit_sell_desc}`\n"
             if TREND_RIDING_ENABLE else "🚀 3-State 엔진: `비활성`\n"
         )
         trail_line = (
@@ -4775,26 +4891,8 @@ def main_loop():
                                 if 총수익_청산_발생:
                                     continue  # Flash Close 청산 완료 -> 이번 폴링 종료 (다음 사이클 준비)
 
-                        # 방금 꺾였으나 목표 미달로 청산되지 않은 경우 (Case B 안내)
-                        if 방금_꺾임 and not 총수익_청산_발생:
-                            try:
-                                _, _, _, _, 사이클_val = 총수익_계산(Ticker, 현재가)
-                                title_sym = Ticker.split('/')[0]
-                                resume_msg = (
-                                    f"🛡️ *[{title_sym}_그리드 매도 재개]*\n"
-                                    f"━━━━━━━━━━━━━━━\n"
-                                    f"📉 *추세 꺾임*: 일봉/4시간봉 5MA 지지선(-{TREND_EXIT_BUFFER_PCT}%) 동시 이탈 확인\n"
-                                    f"💰 *사이클 순익*: `{사이클_val:+.4f} USDT` (목표 {TOTAL_PROFIT_TARGET_USDT} USDT 미달)\n"
-                                    f"🔄 *조치*: 멈췄던 그리드 매도를 재개하여 고점 순차 익절 수비 모드로 복귀합니다.\n"
-                                    f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
-                                    f"━━━━━━━━━━━━━━━"
-                                )
-                                telegram_alert.SendMessage(resume_msg)
-                            except Exception as e:
-                                print(f"[매도 재개 알림 오류] {e}")
-
-                        # 2) 그리드 매도 실행 (고점 순차 익절) -> 매도 미발생 시 매수 실행
-                        매도발생 = 매도실행(Ticker, 현재가)
+                        # 2) 그리드 매도 실행 (추세 라이딩 방금 종료 시: 종료 시점 기준 +0.7% 이상 즉시 매도 / 미만 고점 초기화)
+                        매도발생 = 매도실행(Ticker, 현재가, exit_riding=방금_꺾임)
                         더미_가상매도_감시_및_실행(Ticker, 현재가)
                         if not 매도발생:
                             매수실행(Ticker, 현재가)
