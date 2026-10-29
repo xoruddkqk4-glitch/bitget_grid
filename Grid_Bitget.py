@@ -1358,13 +1358,83 @@ def _그리드_체결_일괄전송(records: List[Optional[Dict[str, Any]]]) -> N
         print(f"[시트 일괄 전송 실패] {e}")
 
 
+def _대시보드용_공백예약_확장(Ticker: str, g_state: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    로컬 gap_orders 상태(동적 재조정을 위해 다음 1개 주문만 보유)를
+    대시보드 전송용으로 전체 잔여 공백 차수(base_level - step 역순) 목록으로 확장.
+    - 구버전 대시보드 프론트엔드(base_level + o.step 계산)와 신버전(o.level 우선 참조) 모두에서
+      28~33차 전체가 정확히 매핑되도록 base_level 앵커와 step/level 필드를 동시에 구성한다.
+    - 로컬 파일은 절대 수정하지 않고 전송 복사본만 변환한다.
+    """
+    if not isinstance(g_state, dict):
+        return {"orders": [], "last_rebalance": None}
+    sync_g = copy.deepcopy(g_state)
+    raw_orders = sync_g.get("orders", [])
+    if not isinstance(raw_orders, list) or not raw_orders:
+        return sync_g
+
+    try:
+        first_ord = raw_orders[0]
+        cur_step = int(first_ord.get("step", 1) or 1)
+        base_lvl = int(sync_g.get("base_level", 0) or 0)
+        top_ceil = int(sync_g.get("top_ceiling", 0) or 0)
+        rem_cnt = int(sync_g.get("remaining_count", len(raw_orders)) or len(raw_orders))
+        first_px = float(first_ord.get("target_price", 0.0) or 0.0)
+        amt_usdt = float(first_ord.get("amount_usdt", 50.0) or 50.0)
+        created_at = str(first_ord.get("created_at", "") or "")
+        grid_cfg = trade_config.get(Ticker, {}).get("grid_config", {})
+        interval_pct = abs(float(grid_cfg.get(2, {}).get("매수간격", 0.7)))
+
+        if base_lvl > 0 and rem_cnt > 0:
+            planned_items = []
+            for idx in range(rem_cnt):
+                s = cur_step + idx
+                lvl = base_lvl - s
+                if lvl <= 0 or (top_ceil > 0 and lvl <= top_ceil):
+                    break
+                est_px = round(first_px * ((1.0 + interval_pct / 100.0) ** idx), 6) if first_px > 0 else 0.0
+                planned_items.append((idx, s, lvl, est_px))
+
+            if planned_items:
+                min_gap_lvl = min(item[2] for item in planned_items)
+                anchor_base = max(0, min_gap_lvl - 1)
+                expanded_orders = []
+                for idx, s, lvl, est_px in planned_items:
+                    compat_step = (lvl - anchor_base) if anchor_base > 0 else s
+                    expanded_orders.append({
+                        "step": compat_step,
+                        "dynamic_step": s,
+                        "level": lvl,
+                        "grid_level": lvl,
+                        "target_price": est_px,
+                        "price": est_px,
+                        "amount_usdt": amt_usdt,
+                        "amount": round(amt_usdt / est_px, 6) if est_px > 0 else 0.0,
+                        "created_at": created_at,
+                        "time": created_at,
+                        "is_dynamic_wait": idx > 0,
+                        "note": (
+                            f"쿨링 공백 복원 동적 예약 {s}단계 (목표가 {est_px:.4f} USDT)"
+                            if idx == 0 else
+                            f"쿨링 공백 복원 동적 예약 {s}단계 (직전 체결가 +{interval_pct}% 동적 재조정 대기)"
+                        ),
+                    })
+                sync_g["rebase_level"] = base_lvl
+                sync_g["base_level"] = anchor_base
+                sync_g["orders"] = expanded_orders
+    except Exception as e:
+        print(f"[공백예약 대시보드 확장 오류] {e}")
+
+    return sync_g
+
+
 def 봇_상태_동기화(Ticker: str):
     """EC2 로컬 JSON 5종(쿨링상태, 공백예약, 잔고부족, baseline, 추세라이딩)과 보유 차수 스냅샷을 구글 시트/대시보드로 동기화"""
     try:
         if sheet_logger is None:
             return
         c_state = 쿨링상태로드(Ticker)
-        g_state = 공백복원_상태로드(Ticker)
+        g_state = _대시보드용_공백예약_확장(Ticker, 공백복원_상태로드(Ticker))
         i_state = 잔고부족_상태로드(Ticker)
         baseline, cycle_count = 총수익_baseline_상태조회(Ticker)
         t_state = 추세라이딩_상태로드(Ticker)
@@ -1801,6 +1871,7 @@ def 쿨링공백복원_실행(
     else:
         orders.append({
             "step": 1,
+            "level": rebase_level - 1,
             "target_price": first_target,
             "amount_usdt": default_amount,
             "created_at": 지금().strftime("%Y-%m-%d %H:%M:%S")
@@ -2134,6 +2205,7 @@ def 비상_증거금확보_쿨링공백복원_실행(
     else:
         orders.append({
             "step": 1,
+            "level": rebase_level - 1,
             "target_price": first_target,
             "amount_usdt": default_amount,
             "created_at": 지금().strftime("%Y-%m-%d %H:%M:%S")
@@ -2300,6 +2372,7 @@ def 공백복원_예약매수_감시(Ticker: str, 현재가: float) -> bool:
         else:
             next_orders = [{
                 "step": current_step + 1,
+                "level": rebase_level - (current_step + 1),
                 "target_price": next_target,
                 "amount_usdt": amount_usdt,
                 "created_at": 지금().strftime("%Y-%m-%d %H:%M:%S")

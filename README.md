@@ -744,3 +744,22 @@
   - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
   - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 그리드 매수·매도 체결 로그 정상 확인
+
+## [2026-10-30 08:50] 업데이트 이력 (Commit ID: PENDING)
+- **수정 내용**:
+  - **쿨링 공백 복원 동적 예약 구간(`gap_orders`) 대시보드 전체 차수 표시 동기화 및 역순 차수 매핑 수정 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py), [`00_dashboard/app_js.html`](file:///C:/Users/user/Desktop/appsscript/00_dashboard/app_js.html), [`00_dashboard/Code.gs`](file:///C:/Users/user/Desktop/appsscript/00_dashboard/Code.gs))**:
+    - **1) 원인 분석 및 해결**:
+      - 바닥 Rebase 체결 차수(`base_level`, 예: `34차`)에서 위로 반등하며 역순(`34 - 1 = 33차` ➔ `28차`)으로 배정되는 구조임에도, 대시보드 프론트엔드에서 `base_level + step`(`34 + 1 = 35차`)으로 잘못 계산되어 추가 하락 실체결분(`35차~`)에 가려지던 문제 해결
+      - 동적 재조정(Dynamic Retargeting)을 위해 로컬 `.gap_orders.json`의 `orders` 배열에 당장 체결할 1단계 주문 1개만 보관함에 따라 나머지 공백 구간(`28차 ~ 32차`)이 대시보드에서 빈칸으로 표시되던 현상 해결
+    - **2) `Grid_Bitget.py` 대시보드 전송용 공백 예약 확장기 (`_대시보드용_공백예약_확장`) 구현**:
+      - 로컬 `.gap_orders.json` 원장은 기존과 동일하게 1단계 동적 주문 1건만 유지(매매 로직 무결성 100% 보존)하면서, `봇_상태_동기화()`를 통해 대시보드로 전송할 때만 `remaining_count`만큼 전체 잔여 공백 차수(`base_level - step` 역순: 예 `33차 ~ 28차`)로 자동 확장하여 전송
+      - 각 예약 객체에 명시적 차수(`level`, `grid_level`)와 구버전 대시보드 호환용 `base_level` 앵커(`min_gap_lvl - 1`) 및 `step`을 동시에 탑재하여 Apps Script 재배포 전·후 모두에서 즉시 `28~33차` 전체가 보라색 `공백 예약`으로 표시되도록 호환성 확보
+      - `쿨링공백복원_실행`, `비상_증거금확보_쿨링공백복원_실행`, `공백복원_예약매수_감시`의 예약 항목에도 역순 차수(`level`) 필드 명시 추가
+    - **3) 대시보드(`00_dashboard/app_js.html`, `Code.gs`) 역순 차수 계산 및 잔여 구간 확장 보강**:
+      - `o.level` 명시값을 최우선 참조하고, 미지정 시 `rebase_level - step` 차감 방식으로 계산하도록 수정
+      - 단일 주문만 수신된 경우에도 `remaining_count`와 `top_ceiling` 기준으로 전체 공백 차수를 자동 확장 표시하도록 개선
+- **검증 결과**:
+  - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
+  - `app_js.html` 및 `Code.gs` JavaScript 구문 검증 통과 (오류 0건)
+  - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
+  - 프로세스 안전 재기동(`pkill -15`) 및 대시보드 실시간 상태 동기화 정상 확인
