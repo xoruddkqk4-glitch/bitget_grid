@@ -375,22 +375,21 @@ TOTAL_PROFIT_CHECK_INTERVAL = 5
 TOTAL_PROFIT_LOG_INTERVAL = 20
 
 
-# --- 3-State Switching Engine (5일선 추세 라이딩) 설정 ⭐ ---
+# --- 3-State Switching Engine (4시간봉 5MA 추세 라이딩) 설정 ⭐ ---
 # 📌 TREND_RIDING_ENABLE = True
-# - True : 5일선 상승 시 매도 정지(포지션 100% 홀딩) & 추세 꺾임 시 총수익 청산(Flash Close) 또는 매도 재개
+# - True : 4시간봉 5선 상승 & 안착 시 매도 정지(포지션 100% 홀딩) & 4시간봉 5선 -0.5% 이탈 시 매도 재개
 # - False: 기능 비활성화 → 기존 그리드 매매만 수행
 TREND_RIDING_ENABLE = True
 
 # 📌 이동평균 계산 기준 캔들 및 기간
-# - 1차 검증: 일봉(1d) 5일선
-# - 2차 검증: 4시간봉(4h) 5선 (1차 이탈 시 즉시 조회 크로스체크)
+# - 진입 및 해제 모두 4시간봉(4h) 5MA 단독 기준 사용 (일봉 후행성으로 인한 매매 지연 방지)
 MA_TIMEFRAME_1D = "1d"
 MA_TIMEFRAME_4H = "4h"
-MA_TIMEFRAME = MA_TIMEFRAME_1D  # 기존 코드 호환용
+MA_TIMEFRAME = MA_TIMEFRAME_4H  # 기본 기준 타임프레임: 4시간봉(4h)
 MA_PERIOD = 5
 
 # 📌 추세 종료(지지선 이탈) 판정 버퍼 (%)
-# - 0.5% 이탈 기준: 현재가 < 5MA * (1 - 0.005) = 5MA * 0.995
+# - 0.5% 이탈 기준: 현재가 < 4시간봉 5MA * (1 - 0.005) = 5MA * 0.995
 TREND_EXIT_BUFFER_PCT = 0.5
 
 # 📌 fetch_ohlcv 거래소 호출 캐싱 주기 (초 단위, API Rate Limit 방어)
@@ -3196,112 +3195,104 @@ def 이동평균_조회(Ticker: str, timeframe: str = "1d") -> Tuple[float, floa
         return 0.0, 0.0, False
 
 def is_ma5_rising(Ticker: str) -> bool:
-    """일봉 5일선 상승 여부 (하위 호환)"""
-    _, _, is_rising = 이동평균_조회(Ticker, timeframe=MA_TIMEFRAME_1D)
+    """4시간봉 5선 상승 여부 (하위 호환)"""
+    _, _, is_rising = 이동평균_조회(Ticker, timeframe=MA_TIMEFRAME_4H)
     return is_rising
 
-def 현재_MA5_정보(Ticker: str, timeframe: str = "1d") -> Tuple[float, float, bool]:
+def 현재_MA5_정보(Ticker: str, timeframe: str = "4h") -> Tuple[float, float, bool]:
     """캐시된 ma_today, ma_yesterday, is_rising 반환 (모니터링용)"""
     return 이동평균_조회(Ticker, timeframe=timeframe)
 
 def 추세라이딩_상태체크(Ticker: str, 현재가: float) -> Tuple[bool, bool]:
     """
-    MTF(일봉 + 4시간봉) 지지선 이탈 필터가 적용된 추세 라이딩(상태 2) 활성 여부 판정
+    4시간봉(4h) 5MA 지지선 이탈 필터가 적용된 추세 라이딩(상태 2) 활성 여부 판정
     [반환] (라이딩_중: bool, 방금_꺾임: bool)
     
-    1. 진입 조건:
-       - 일봉 5일선 상승 중 (ma5_today > ma5_yesterday)
-       - AND 현재가가 일봉 5MA 지지선 이상 (현재가 >= ma_1d_today) -> 진입 즉시 튕겨나감 방지
+    1. 진입 조건 (4시간봉 5MA 단독):
+       - 4시간봉 5MA 상승 중 (ma_4h_today > ma_4h_prev)
+       - AND 현재가가 4시간봉 5MA 지지선 이상 (현재가 >= ma_4h_today) -> 진입 즉시 튕겨나감(핑퐁) 방지
     
-    2. 종료(꺾임) 조건 (MTF 2단계 검증):
-       - 1단계: 현재가 < 일봉 5MA * (1 - TREND_EXIT_BUFFER_PCT/100)  [기본 0.995]
-       - 2단계 (1단계 발생 시에만 4시간봉 즉시 조회):
-               현재가 < 4시간 5MA * (1 - TREND_EXIT_BUFFER_PCT/100) [기본 0.995]
-       - 1단계 및 2단계 동시 이탈 시 상태 2 종료 -> 방금_꺾임=True 반환 (청산/수비 검사 진입)
+    2. 종료(꺾임) 조건 (4시간봉 5MA 단독):
+       - 현재가 < 4시간봉 5MA * (1 - TREND_EXIT_BUFFER_PCT/100) [기본 0.995]
+       - 이탈 시 즉시 상태 2 종료 -> 방금_꺾임=True 반환 (청산/수비 검사 진입)
     """
     now = time.time()
     state = 추세라이딩_상태로드(Ticker)
-    ma_1d_today, ma_1d_yesterday, rising_1d = 이동평균_조회(Ticker, timeframe=MA_TIMEFRAME_1D)
+    ma_4h_today, ma_4h_prev, rising_4h = 이동평균_조회(Ticker, timeframe=MA_TIMEFRAME_4H)
     title_symbol = Ticker.split('/')[0]
 
     buffer_multiplier = 1.0 - (TREND_EXIT_BUFFER_PCT / 100.0)
 
     if not state["is_riding"]:
-        # 진입: 일봉 5일선 상승 + 현재가가 일봉 5일선 지지선 이상
-        if rising_1d and ma_1d_today > 0 and 현재가 >= ma_1d_today:
+        # 진입: 4시간봉 5MA 상승 + 현재가가 4시간봉 5MA 지지선 이상
+        if rising_4h and ma_4h_today > 0 and 현재가 >= ma_4h_today:
             state["is_riding"] = True
             state["entered_at"] = now
             추세라이딩_상태저장(Ticker, state)
+            이탈기준_4h = ma_4h_today * buffer_multiplier
             msg = (
                 f"🚀 *[{title_symbol}_추세 라이딩 진입]*\n"
                 f"━━━━━━━━━━━━━━━\n"
                 f"📊 *종목*: `{Ticker}`\n"
-                f"📈 *일봉 5MA*: 상승 전환 (`{ma_1d_today:.4f} > {ma_1d_yesterday:.4f}`)\n"
+                f"📈 *4시간 5MA*: 상승 전환 (`{ma_4h_today:.4f} > {ma_4h_prev:.4f}`)\n"
                 f"📌 *현재가*: `{현재가:.4f} USDT`\n"
-                f"🛡️ *종료 조건*: 일봉 및 4시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% 동시 이탈 시\n"
+                f"🛡️ *종료 조건*: 4시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% 이탈 시 (`{이탈기준_4h:.4f} USDT` 하회)\n"
                 f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
                 f"━━━━━━━━━━━━━━━"
             )
             telegram_alert.SendMessage(msg)
             print(
-                f"🚀 [{title_symbol}] 일봉 5MA 상승 & 안착 -> 상태 2 [추세 라이딩] 진입 "
-                f"(종료조건: 일봉+4시간 5MA -{TREND_EXIT_BUFFER_PCT}% 동시 이탈)",
+                f"🚀 [{title_symbol}] 4시간봉 5MA 상승 & 안착 -> 상태 2 [추세 라이딩] 진입 "
+                f"(종료조건: 4시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% 이탈, 기준선 {이탈기준_4h:.4f})",
                 flush=True
             )
             return True, False
         return False, False
     else:
         # 이미 상태 2(라이딩) 중인 경우
-        if ma_1d_today <= 0:
+        if ma_4h_today <= 0:
             return True, False
 
-        # 1차 검증: 일봉 5MA 지지선 이탈 (-0.5%) 확인
-        이탈기준_1d = ma_1d_today * buffer_multiplier
-        if 현재가 < 이탈기준_1d:
-            # ➔ 1차 이탈 발생 시에만 4시간봉 즉시 조회 (Lazy Evaluation)
-            ma_4h_today, _, _ = 이동평균_조회(Ticker, timeframe=MA_TIMEFRAME_4H)
-            if ma_4h_today > 0:
-                이탈기준_4h = ma_4h_today * buffer_multiplier
-                # 2차 검증: 4시간봉 5MA 지지선도 동시 이탈했는가?
-                if 현재가 < 이탈기준_4h:
-                    state["is_riding"] = False
-                    state["entered_at"] = 0.0
-                    추세라이딩_상태저장(Ticker, state)
-                    사이클_라인 = ""
-                    if TOTAL_PROFIT_TARGET_ENABLE:
-                        try:
-                            _, _, _, _, 사이클_val = 총수익_계산(Ticker, 현재가)
-                            사이클_라인 = f"💰 *사이클 순익*: `{사이클_val:+.4f} USDT` (목표 {TOTAL_PROFIT_TARGET_USDT} USDT)\n"
-                        except Exception:
-                            pass
-                    _exit_action_desc = (
-                        f"종료 시점 기준 트레일링 가동 (1차+{TRAIL_STAGE1_PCT}% 보존 / 2차+{TRAIL_STAGE2_PCT}% 고점-{TRAIL_DISTANCE_PCT}%)"
-                        if TREND_RIDING_EXIT_SELL_MODE == "TRAILING"
-                        else f"종료 시점 기준 +{TRAIL_STAGE1_PCT}% 이상 차수 즉시 매도 및 그리드 매도 재개"
-                    )
-                    exit_msg = (
-                        f"🛑 *[{title_symbol}_추세 라이딩 종료]*\n"
-                        f"━━━━━━━━━━━━━━━\n"
-                        f"📊 *종목*: `{Ticker}`\n"
-                        f"📉 *일봉 5MA*: 이탈 (`{현재가:.4f} < {이탈기준_1d:.4f}`, 5MA `{ma_1d_today:.4f}`)\n"
-                        f"📉 *4시간 5MA*: 이탈 (`{현재가:.4f} < {이탈기준_4h:.4f}`, 5MA `{ma_4h_today:.4f}`)\n"
-                        f"📌 *현재가*: `{현재가:.4f} USDT`\n"
-                        f"🛡️ *종료 조건*: 일봉 및 4시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% 동시 이탈 충족\n"
-                        f"{사이클_라인}"
-                        f"🔄 *후속 조치*: {_exit_action_desc}\n"
-                        f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
-                        f"━━━━━━━━━━━━━━━"
-                    )
-                    try:
-                        telegram_alert.SendMessage(exit_msg)
-                    except Exception as e:
-                        print(f"[추세 라이딩 종료 알림 오류] {e}")
-                    print(
-                        f"📉 [{title_symbol}] 일봉/4시간봉 5MA 지지선(-{TREND_EXIT_BUFFER_PCT}%) 동시 이탈 감지 "
-                        f"(현재가 {현재가:.4f} < 일봉기준 {이탈기준_1d:.4f} & 4시간기준 {이탈기준_4h:.4f}) -> 추세 라이딩 종료",
-                        flush=True
-                    )
-                    return False, True
+        # 검증: 4시간봉 5MA 지지선 이탈 (-0.5%) 확인
+        이탈기준_4h = ma_4h_today * buffer_multiplier
+        if 현재가 < 이탈기준_4h:
+            state["is_riding"] = False
+            state["entered_at"] = 0.0
+            추세라이딩_상태저장(Ticker, state)
+            사이클_라인 = ""
+            if TOTAL_PROFIT_TARGET_ENABLE:
+                try:
+                    _, _, _, _, 사이클_val = 총수익_계산(Ticker, 현재가)
+                    사이클_라인 = f"💰 *사이클 순익*: `{사이클_val:+.4f} USDT` (목표 {TOTAL_PROFIT_TARGET_USDT} USDT)\n"
+                except Exception:
+                    pass
+            _exit_action_desc = (
+                f"종료 시점 기준 트레일링 가동 (1차+{TRAIL_STAGE1_PCT}% 보존 / 2차+{TRAIL_STAGE2_PCT}% 고점-{TRAIL_DISTANCE_PCT}%)"
+                if TREND_RIDING_EXIT_SELL_MODE == "TRAILING"
+                else f"종료 시점 기준 +{TRAIL_STAGE1_PCT}% 이상 차수 즉시 매도 및 그리드 매도 재개"
+            )
+            exit_msg = (
+                f"🛑 *[{title_symbol}_추세 라이딩 종료]*\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"📊 *종목*: `{Ticker}`\n"
+                f"📉 *4시간 5MA*: 이탈 (`{현재가:.4f} < {이탈기준_4h:.4f}`, 5MA `{ma_4h_today:.4f}`)\n"
+                f"📌 *현재가*: `{현재가:.4f} USDT`\n"
+                f"🛡️ *종료 조건*: 4시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% 이탈 충족\n"
+                f"{사이클_라인}"
+                f"🔄 *후속 조치*: {_exit_action_desc}\n"
+                f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
+                f"━━━━━━━━━━━━━━━"
+            )
+            try:
+                telegram_alert.SendMessage(exit_msg)
+            except Exception as e:
+                print(f"[추세 라이딩 종료 알림 오류] {e}")
+            print(
+                f"📉 [{title_symbol}] 4시간봉 5MA 지지선(-{TREND_EXIT_BUFFER_PCT}%) 이탈 감지 "
+                f"(현재가 {현재가:.4f} < 4시간기준 {이탈기준_4h:.4f}) -> 추세 라이딩 종료",
+                flush=True
+            )
+            return False, True
 
         # 지지선 유지 중: 라이딩 지속
         return True, False
@@ -4706,7 +4697,7 @@ def main_loop():
             "TRAILING" : f"종료 시점 기준 2단계 트레일링 (+{TRAIL_STAGE1_PCT}% 보존 / +{TRAIL_STAGE2_PCT}% 고점-{TRAIL_DISTANCE_PCT}%)",
             "IMMEDIATE": f"종료 시점 +{TRAIL_STAGE1_PCT}% 이상 즉시 익절",
         }.get(TREND_RIDING_EXIT_SELL_MODE, TREND_RIDING_EXIT_SELL_MODE)
-        print(f"   - 3-State 엔진: 활성화 (일봉+4시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% MTF 지지선 이탈 필터)")
+        print(f"   - 3-State 엔진: 활성화 (4시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% 지지선 이탈 필터)")
         print(f"   - 라이딩 중 매도: [{TREND_RIDING_SELL_MODE}] {_sell_mode_label}")
         print(f"   - 라이딩 종료 시 매도: [{TREND_RIDING_EXIT_SELL_MODE}] {_exit_sell_label}")
     else:
@@ -4736,7 +4727,7 @@ def main_loop():
             "IMMEDIATE": f"종료 시점 +{TRAIL_STAGE1_PCT}% 이상 즉시 익절",
         }.get(TREND_RIDING_EXIT_SELL_MODE, TREND_RIDING_EXIT_SELL_MODE)
         trend_line = (
-            f"🚀 3-State 엔진: `일봉+4시간봉 5MA MTF 추세 라이딩` (이탈: -{TREND_EXIT_BUFFER_PCT}% 동시하회)\n"
+            f"🚀 3-State 엔진: `4시간봉 5MA 추세 라이딩` (이탈: -{TREND_EXIT_BUFFER_PCT}% 하회)\n"
             f"🔄 라이딩 중 매도: `[{TREND_RIDING_SELL_MODE}] {_sell_mode_desc}`\n"
             f"🏁 라이딩 종료 매도: `[{TREND_RIDING_EXIT_SELL_MODE}] {_exit_sell_desc}`\n"
             if TREND_RIDING_ENABLE else "🚀 3-State 엔진: `비활성`\n"
