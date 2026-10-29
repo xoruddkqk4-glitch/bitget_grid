@@ -731,7 +731,7 @@
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
   - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 로그 정상 확인
 
-## [2026-10-29 23:02] 업데이트 이력 (Commit ID: PENDING)
+## [2026-10-29 23:02] 업데이트 이력 (Commit ID: 5270dad)
 - **수정 내용**:
   - **추세 라이딩 상태(`.SOXL_USDT_USDT_trend_riding.json`) 및 4시간봉 5MA 지표 대시보드/구글 시트 실시간 동기화 연동 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
     - **1) `봇_상태_동기화` 페이로드 확장 (`JSON 4종 ➔ 5종`)**:
