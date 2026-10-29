@@ -715,7 +715,7 @@
   - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 체결 로그 정상 확인
 
 
-## [2026-10-29 22:17] 업데이트 이력 (Commit ID: PENDING)
+## [2026-10-29 22:17] 업데이트 이력 (Commit ID: dd611c5)
 - **수정 내용**:
   - **추세 라이딩 진입·해제 기준을 4시간봉(4H) 5MA 단독 기준(방안 B)으로 개편 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
     - **1) 일봉(1D) 5MA 조건 완전 제거 및 4시간봉(4H) 5MA 단일화 (`MA_TIMEFRAME = MA_TIMEFRAME_4H`)**:
