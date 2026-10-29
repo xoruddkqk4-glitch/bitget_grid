@@ -745,7 +745,7 @@
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
   - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 그리드 매수·매도 체결 로그 정상 확인
 
-## [2026-10-30 08:50] 업데이트 이력 (Commit ID: PENDING)
+## [2026-10-30 08:50] 업데이트 이력 (Commit ID: e2aa5a4)
 - **수정 내용**:
   - **쿨링 공백 복원 동적 예약 구간(`gap_orders`) 대시보드 전체 차수 표시 동기화 및 역순 차수 매핑 수정 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py), [`00_dashboard/app_js.html`](file:///C:/Users/user/Desktop/appsscript/00_dashboard/app_js.html), [`00_dashboard/Code.gs`](file:///C:/Users/user/Desktop/appsscript/00_dashboard/Code.gs))**:
     - **1) 원인 분석 및 해결**:
