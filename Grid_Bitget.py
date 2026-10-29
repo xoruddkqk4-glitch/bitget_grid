@@ -1359,7 +1359,7 @@ def _그리드_체결_일괄전송(records: List[Optional[Dict[str, Any]]]) -> N
 
 
 def 봇_상태_동기화(Ticker: str):
-    """EC2 로컬 JSON 4종(쿨링상태, 공백예약, 잔고부족, baseline)과 보유 차수 스냅샷을 구글 시트/대시보드로 동기화"""
+    """EC2 로컬 JSON 5종(쿨링상태, 공백예약, 잔고부족, baseline, 추세라이딩)과 보유 차수 스냅샷을 구글 시트/대시보드로 동기화"""
     try:
         if sheet_logger is None:
             return
@@ -1367,7 +1367,10 @@ def 봇_상태_동기화(Ticker: str):
         g_state = 공백복원_상태로드(Ticker)
         i_state = 잔고부족_상태로드(Ticker)
         baseline, cycle_count = 총수익_baseline_상태조회(Ticker)
-        
+        t_state = 추세라이딩_상태로드(Ticker)
+        ma_4h_today, ma_4h_prev, rising_4h = 이동평균_조회(Ticker, timeframe=MA_TIMEFRAME_4H)
+        exit_line = round(float(ma_4h_today) * (1.0 - float(TREND_EXIT_BUFFER_PCT) / 100.0), 4) if ma_4h_today > 0 else 0.0
+
         state_payload = {
             "symbol": Ticker,
             "buy_cooldown": c_state,
@@ -1376,6 +1379,15 @@ def 봇_상태_동기화(Ticker: str):
             "total_profit_baseline": {
                 "baseline": baseline,
                 "cycle_count": cycle_count
+            },
+            "trend_riding": {
+                "active": bool(t_state.get("is_riding", False)),
+                "entered_at": float(t_state.get("entered_at", 0.0) or 0.0),
+                "ma_4h_today": round(float(ma_4h_today), 4),
+                "ma_4h_prev": round(float(ma_4h_prev), 4),
+                "is_ma_rising": bool(rising_4h),
+                "exit_line": exit_line,
+                "buffer_pct": float(TREND_EXIT_BUFFER_PCT)
             }
         }
         open_lots = _그리드_열린차수_스냅샷(Ticker)
@@ -3143,7 +3155,7 @@ def 추세라이딩_상태로드(Ticker: str) -> dict:
     return default_state
 
 def 추세라이딩_상태저장(Ticker: str, state: dict) -> None:
-    """추세 라이딩 상태 메모리 및 로컬 JSON 원자적(Atomic) 저장"""
+    """추세 라이딩 상태 메모리 및 로컬 JSON 원자적(Atomic) 저장 + 대시보드 즉시 동기화"""
     _trend_riding_state[Ticker] = state
     try:
         path = _trend_riding_state_path(Ticker)
@@ -3154,6 +3166,10 @@ def 추세라이딩_상태저장(Ticker: str, state: dict) -> None:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
         os.replace(tmp, path)
+        try:
+            봇_상태_동기화(Ticker)
+        except Exception:
+            pass
     except Exception as e:
         print(f"[추세라이딩 상태 저장 실패] {e}")
 
@@ -4714,6 +4730,10 @@ def main_loop():
             총수익_baseline_부트스트랩(Ticker)
         except Exception as e:
             print(f"[baseline 부트스트랩 실패] {Ticker} / {e}")
+        try:
+            봇_상태_동기화(Ticker)
+        except Exception as e:
+            print(f"[시작 시 봇 상태 동기화 실패] {Ticker} / {e}")
 
     # 시작 알림
     try:

@@ -730,3 +730,17 @@
   - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
   - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 로그 정상 확인
+
+## [2026-10-29 23:02] 업데이트 이력 (Commit ID: PENDING)
+- **수정 내용**:
+  - **추세 라이딩 상태(`.SOXL_USDT_USDT_trend_riding.json`) 및 4시간봉 5MA 지표 대시보드/구글 시트 실시간 동기화 연동 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
+    - **1) `봇_상태_동기화` 페이로드 확장 (`JSON 4종 ➔ 5종`)**:
+      - 기존 `buy_cooldown`, `gap_orders`, `insufficient_balance`, `total_profit_baseline` 외에 `trend_riding` 상태 객체(`active`, `entered_at`, `ma_4h_today`, `ma_4h_prev`, `is_ma_rising`, `exit_line`, `buffer_pct`)를 추가하여 웹 대시보드 및 구글 시트에서 추세 라이딩 활성 여부와 4시간봉 5MA 이탈 기준선을 실시간으로 확인할 수 있도록 개선
+    - **2) 추세 라이딩 진입/종료 시 대시보드 즉시 동기화 (`추세라이딩_상태저장`)**:
+      - 추세 라이딩 상태 변경(`.trend_riding.json` 저장) 직후 `봇_상태_동기화(Ticker)`를 즉시 호출하여 진입/해제 시점의 상태가 지연 없이 대시보드에 반영되도록 연동
+    - **3) 봇 시작 부트스트랩 시 초기 상태 동기화 보강 (`main_loop`)**:
+      - 봇 기동 직후 초기화 단계에서 `봇_상태_동기화(Ticker)`를 호출하여 최신 상태 스냅샷을 즉시 갱신하도록 보완
+- **검증 결과**:
+  - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
+  - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
+  - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 실시간 그리드 매수·매도 체결 로그 정상 확인
