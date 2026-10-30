@@ -264,12 +264,12 @@ except Exception as e:
 # 📌 실시간 폴링 설정
 # ===============================
 
-# 📌 POLL_INTERVAL = 3
+# 📌 POLL_INTERVAL = 1
 # - 봇이 가격을 조회하고 매수/매도 조건을 체크하는 주기 (초 단위)
-# - 3초 권장: Bitget rate limit + EC2 t3.micro 자원 + 다른 봇 공존 고려한 절충값
+# - 1초 설정: 엑셀 메모리 캐시(_excel_memory_cache) 적용으로 EC2 CPU/디스크 부하 없이 고속 폴링
 # - 1초 미만: rate limit 위험 + 다른 봇과 자원 경합
 # - 5초 이상: 그리드 봇 의미 약화 (체결 기회 놓침)
-POLL_INTERVAL = 3
+POLL_INTERVAL = 1
 
 # 📌 HEARTBEAT_INTERVAL = 600
 # - 봇이 살아있다는 신호를 텔레그램으로 보내는 주기 (초 단위)
@@ -657,20 +657,49 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 
 # ===============================
-# 파일 유틸 (엑셀 거래 기록)
+# 파일 유틸 (엑셀 거래 기록 + 메모리 캐시)
 # ===============================
-def initialize_excel_file(file_name: str):
-    """엑셀 파일이 없으면 컬럼만 있는 빈 파일 생성"""
+# - 1초 고속 폴링 시 매초 디스크 I/O 및 openpyxl XML 압축 해제/파싱으로 인한
+#   EC2 CPU 크레딧 소모를 방지하기 위해 파일 수정 시각(mtime) 기반 메모리 캐시를 운용합니다.
+# - 평상시 폴링: 디스크 읽기 없이 RAM에서 즉시 복사본 반환 (0.0001초)
+# - 매수/매도/고점 갱신 저장 시: 디스크 엑셀 저장과 동시에 메모리 캐시 즉시 동기화
+# - 외부 수동 수정 시: os.path.getmtime 변경을 자동 감지하여 디스크에서 재로드
+_excel_memory_cache: Dict[str, Dict[str, Any]] = {}
+
+
+def _엑셀캐시_갱신(file_name: str, df: pd.DataFrame):
+    """저장 또는 로드 직후 현재 파일의 mtime과 DataFrame 복사본을 메모리에 캐싱"""
     try:
-        pd.read_excel(file_name)
-    except FileNotFoundError:
+        if os.path.exists(file_name):
+            mtime = os.path.getmtime(file_name)
+            _excel_memory_cache[file_name] = {
+                "mtime": mtime,
+                "df": df.copy(),
+            }
+    except Exception as e:
+        print(f"[엑셀 캐시 갱신 실패] {e}")
+
+
+def initialize_excel_file(file_name: str):
+    """엑셀 파일이 없으면 컬럼만 있는 빈 파일 생성 및 메모리 캐시 적재"""
+    if not os.path.exists(file_name):
         os.makedirs(os.path.dirname(file_name), exist_ok=True)
         df = pd.DataFrame(columns=COLUMNS)
         df.to_excel(file_name, index=False, engine="openpyxl")
+        _엑셀캐시_갱신(file_name, df)
+    else:
+        매매기록불러오기(file_name)
+
 
 def 매매기록불러오기(file_name: str) -> pd.DataFrame:
-    """엑셀에서 거래 기록 로드 (날짜 컬럼 datetime 변환 포함)"""
+    """엑셀에서 거래 기록 로드 (mtime 기반 메모리 캐시 우선 조회, 날짜 컬럼 datetime 변환 포함)"""
     try:
+        if os.path.exists(file_name):
+            current_mtime = os.path.getmtime(file_name)
+            cached = _excel_memory_cache.get(file_name)
+            if cached is not None and cached.get("mtime") == current_mtime:
+                return cached["df"].copy()
+
         df = pd.read_excel(file_name, engine="openpyxl")
         if "매수날짜" in df:
             df["매수날짜"] = pd.to_datetime(df["매수날짜"], errors="coerce")
@@ -686,16 +715,19 @@ def 매매기록불러오기(file_name: str) -> pd.DataFrame:
                 df[col] = pd.NA
         # 컬럼 순서를 표준 순서로 재정렬
         df = df[COLUMNS]
+        _엑셀캐시_갱신(file_name, df)
 
     except FileNotFoundError:
         df = pd.DataFrame(columns=COLUMNS)
         os.makedirs(os.path.dirname(file_name), exist_ok=True)
         df.to_excel(file_name, index=False, engine="openpyxl")
-    return df
+        _엑셀캐시_갱신(file_name, df)
+    return df.copy()
+
 
 def 매매기록저장(df: pd.DataFrame, file_name: str):
     """
-    거래 기록 엑셀 저장
+    거래 기록 엑셀 저장 및 메모리 캐시 즉시 동기화
 
     [안전장치] 저장 직전에 누적실현손익 컬럼을 자동 재계산합니다.
     청산 완료된 행을 매도날짜 순으로 정렬해 실현손익의 누적합을 다시 기록하므로,
@@ -733,10 +765,12 @@ def 매매기록저장(df: pd.DataFrame, file_name: str):
                 elif "Sheet1" in names:
                     trade_sheet = "Sheet1"
                 df.to_excel(writer, index=False, sheet_name=trade_sheet)
+            _엑셀캐시_갱신(file_name, df)
             return
         except Exception as e:
             print(f"[엑셀 시트 유지 저장 실패 → 전체 덮어쓰기] {e}")
     df.to_excel(file_name, index=False, engine="openpyxl")
+    _엑셀캐시_갱신(file_name, df)
 
 
 # --- 누적실현손익 시작값 안전 조회 (max() 버그 수정) ---
@@ -4563,7 +4597,7 @@ def 일일정산_실행(정산일: str, start_dt: datetime = None, end_dt: datet
             continue
 
         try:
-            df = pd.read_excel(fp, engine="openpyxl", sheet_name=0)
+            df = 매매기록불러오기(fp)
         except Exception as e:
             print(f"   ⚠️ {ticker} 엑셀 로딩 실패: {e}", flush=True)
             continue
@@ -4579,6 +4613,7 @@ def 일일정산_실행(정산일: str, start_dt: datetime = None, end_dt: datet
         st_total = _정산_데이터_집계(df, total_start, end_dt)
 
         cum = _정산_시트갱신(fp, 정산일, st_daily)
+        _엑셀캐시_갱신(fp, df)
         total_cum_daily += cum
 
         # 종목 첫 거래일 계산 (전체 정산 일일 평균용)
