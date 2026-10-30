@@ -763,3 +763,17 @@
   - `app_js.html` 및 `Code.gs` JavaScript 구문 검증 통과 (오류 0건)
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료
   - 프로세스 안전 재기동(`pkill -15`) 및 대시보드 실시간 상태 동기화 정상 확인
+
+## [2026-10-30 13:58] 업데이트 이력 (Commit ID: 824e3ed)
+- **수정 내용**:
+  - **폴링 주기 1초 단축(`POLL_INTERVAL = 1`) 및 `mtime` 기반 엑셀 메모리 캐시(`_excel_memory_cache`) 도입 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
+    - **1) 실시간 폴링 주기 3초 ➔ 1초 단축 (`POLL_INTERVAL = 1`)**:
+      - 트레일링 매도(`+0.7%` 보존선 및 `+0.9%` 이후 고점 대비 `-0.2%` 하락 청산)에서 3초 폴링 간격 동안 발생하는 가격 언더슈팅 지연을 줄이고 순간 고점(Spike) 포착률을 높이기 위해 폴링 주기를 1초로 단축
+    - **2) 파일 수정 시각(`os.path.getmtime`) 기반 엑셀 메모리 캐시 구현 (`_excel_memory_cache`, `_엑셀캐시_갱신`)**:
+      - 1초 고속 폴링 환경에서 매초 반복되던 디스크 엑셀 파일 읽기(`pd.read_excel`) 및 `openpyxl` XML 압축 해제/파싱 오버헤드를 제거하여 AWS EC2 CPU 크레딧 소모 원천 방지
+      - **평상시 폴링(`매매기록불러오기`)**: 디스크 읽기 없이 메모리에 적재된 `DataFrame` 복사본(`df.copy()`)을 즉시 반환하며, 외부 수동 수정 시 `mtime` 변경을 자동 감지하여 디스크에서 재로드
+      - **저장 및 정산 시 즉시 동기화(`매매기록저장`, `일일정산_실행`)**: 매수·매도·고점 갱신 및 일일 정산 시트 갱신 직후 `_엑셀캐시_갱신()`을 호출하여 디스크 저장과 동시에 메모리 캐시를 최신 상태로 유지
+- **검증 결과**:
+  - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
+  - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료 (`REMOTE_COMPILE_OK`)
+  - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료/시작 메시지, 1초 폴링 실시간 로그 정상 가동 확인
