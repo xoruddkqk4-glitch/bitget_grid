@@ -396,17 +396,17 @@ TREND_EXIT_BUFFER_PCT = 0.5
 MA_CACHE_SECONDS = 30       # 일봉 캐시 30초
 MA_4H_CACHE_SECONDS = 15    # 4시간봉 캐시 15초
 
-# 📌 TREND_RIDING_SELL_MODE = "OFF"
+# 📌 TREND_RIDING_SELL_MODE = "STAGE1_ONLY"
 # - 추세 라이딩(상태 2) 중 매도 허용 범위를 결정합니다.
-# - "OFF" (기본값/권장):
-#     상승 추세 라이딩 중에는 매도 100% 전면 금지 (0.7% 이하로 내려가도 홀딩 유지).
-#     추세 라이딩이 종료되면 TREND_RIDING_EXIT_SELL_MODE 설정에 따라 해당 시점 기준으로 매도 여부를 확인합니다.
-# - "STAGE1_ONLY":
+# - "STAGE1_ONLY" (기본값/권장):
 #     우상향 중인 차수는 홀딩하되, 수익률이 +TRAIL_STAGE1_PCT(0.7%) 이상 도달 후
 #     그 이하로 반락하는 차수만 '이익 보존 매도' 실행.
+# - "OFF":
+#     상승 추세 라이딩 중에는 매도 100% 전면 금지 (0.7% 이하로 내려가도 홀딩 유지).
+#     추세 라이딩이 종료되면 TREND_RIDING_EXIT_SELL_MODE 설정에 따라 해당 시점 기준으로 매도 여부를 확인합니다.
 # - "ALL":
 #     1단계(0.7% 보존선) 및 2단계(0.9% 이상 도달 후 고점 대비 -0.2%p 하락) 모두 매도 허용.
-TREND_RIDING_SELL_MODE = "OFF"  # "OFF" | "STAGE1_ONLY" | "ALL"
+TREND_RIDING_SELL_MODE = "STAGE1_ONLY"  # "OFF" | "STAGE1_ONLY" | "ALL"
 
 # 📌 TREND_RIDING_EXIT_SELL_MODE = "TRAILING"
 # - 추세 라이딩 종료(5MA -0.5% 동시 이탈) 시점에 보유 차수들의 매도 처리 방식을 결정합니다.
@@ -3857,7 +3857,17 @@ def 매도실행(Ticker: str, 현재가: float, riding_mode: str = None, exit_ri
         except (TypeError, ValueError, KeyError):
             기존고점 = 0.0
 
-        if exit_riding:
+        # 경계 틱 안전장치: 라이딩 중 +0.7%(TRAIL_STAGE1_PCT) 이상 도달했던 차수가
+        # 4시간봉 5MA 이탈(exit_riding=True)과 동시에 +0.7% 이하로 내려앉은 경우,
+        # 고점 초기화로 인해 보존 매도가 누락되지 않도록 기존 고점을 유지하고 즉시 보존 매도 트리거
+        경계틱_보존매도 = (
+            exit_riding
+            and TREND_RIDING_SELL_MODE in ("STAGE1_ONLY", "ALL")
+            and 기존고점 >= TRAIL_STAGE1_PCT
+            and 현재수익률 <= TRAIL_STAGE1_PCT
+        )
+
+        if exit_riding and not 경계틱_보존매도:
             # 추세 라이딩 종료 시점: 이전(라이딩 전/중) 고점 기록을 무시하고 현재 시점 기준으로 재설정
             최고수익률 = max(0.0, 현재수익률)
             if round(최고수익률, 4) != round(기존고점, 4):
@@ -3875,7 +3885,12 @@ def 매도실행(Ticker: str, 현재가: float, riding_mode: str = None, exit_ri
         라이딩_보존매도 = False  # 라이딩 중 이익 보존 매도 여부 플래그
         라이딩종료_즉시매도 = False  # 추세 라이딩 종료 시점 +0.7% 이상 즉시 매도 플래그
         if TRAILING_ENABLE:
-            if exit_riding and TREND_RIDING_EXIT_SELL_MODE == "IMMEDIATE":
+            if 경계틱_보존매도:
+                트레일단계 = 1
+                트레일매도선 = TRAIL_STAGE1_PCT
+                매도조건 = True
+                라이딩_보존매도 = True
+            elif exit_riding and TREND_RIDING_EXIT_SELL_MODE == "IMMEDIATE":
                 # IMMEDIATE 모드: 추세 라이딩 종료 시점에 현재 수익률이 +0.7%(TRAIL_STAGE1_PCT) 이상이면 즉시 익절 매도
                 if 현재수익률 >= TRAIL_STAGE1_PCT:
                     트레일단계 = 1
@@ -3901,6 +3916,8 @@ def 매도실행(Ticker: str, 현재가: float, riding_mode: str = None, exit_ri
                 트레일단계 = 1
                 트레일매도선 = TRAIL_STAGE1_PCT
                 매도조건 = (현재수익률 <= 트레일매도선)
+                if riding_mode == "STAGE1_ONLY" and 매도조건:
+                    라이딩_보존매도 = True
         else:
             목표가 = 매수가 * (1 + float(config["매도간격"]) / 100.0)
             매도조건 = 현재가 >= 목표가
