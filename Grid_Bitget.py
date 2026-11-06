@@ -593,6 +593,7 @@ GRID_TEMPLATE: Dict[int, Dict[str, Any]] = {
     **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 50} for i in range(46, 71)},
     **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 50} for i in range(71, 91)},
     **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 50} for i in range(91, 101)},
+    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 50} for i in range(101, 151)},
 }
 
 # 📌 PER_SYMBOL_GRID
@@ -634,7 +635,7 @@ COLUMNS = [
     "매도날짜", "매도가", "매도수량", "매도금액",
     "매도시현재가", "매도슬리피지%",
     "수수료", "실현손익", "수익률", "누적실현손익",
-    "청산유형",
+    "청산유형", "매수유형",
 ]
 
 
@@ -1180,6 +1181,40 @@ def 공백복원_상태클리어(Ticker: str):
     공백복원_상태저장(Ticker, {"orders": [], "last_rebalance": None})
     잔고부족_트래커_클리어(Ticker)
 
+def 공백복원_예약차수_조회(Ticker: str) -> Tuple[bool, int, float, set]:
+    """
+    현재 대기 중인 공백 복원 예약 차수 정보 조회.
+    [반환] (has_pending, next_gap_level, next_gap_target_price, pending_levels_set)
+    - next_gap_level: 현재 가장 아래(다음 체결 대상)에 위치한 공백 예약 차수 번호
+    - next_gap_target_price: next_gap_level의 예약 매수 목표가
+    - pending_levels_set: 아직 체결되지 않고 대기 중인 모든 공백 복원 예약 차수 집합
+    """
+    if not GAP_RECONSTRUCTION_ENABLE:
+        return False, 0, 0.0, set()
+    state = 공백복원_상태로드(Ticker)
+    orders = state.get("orders", [])
+    if not orders:
+        return False, 0, 0.0, set()
+    try:
+        first_ord = orders[0]
+        cur_step = int(first_ord.get("step", 1) or 1)
+        base_lvl = int(state.get("base_level", 0) or 0)
+        next_lvl = int(first_ord.get("level", base_lvl - cur_step if base_lvl > 0 else 0) or 0)
+        target_px = float(first_ord.get("target_price", 0.0) or 0.0)
+        rem_cnt = int(state.get("remaining_count", len(orders)) or len(orders))
+        top_ceil = int(state.get("top_ceiling", 0) or 0)
+        pending_set = set()
+        if next_lvl > 0 and rem_cnt > 0:
+            for idx in range(rem_cnt):
+                lvl = next_lvl - idx
+                if lvl <= 0 or (top_ceil > 0 and lvl <= top_ceil):
+                    break
+                pending_set.add(lvl)
+        return True, next_lvl, target_px, pending_set
+    except Exception as e:
+        print(f"[공백복원 예약차수 조회 오류] {e}")
+        return False, 0, 0.0, set()
+
 
 # =========================================================
 # 📌 잔고 부족 가상 매수 시도 트래커 (v2.4 비상 자가치유 롤다운 모듈)
@@ -1510,10 +1545,13 @@ def 최근_총매수시도_고유차수수(df: pd.DataFrame, Ticker: str, window
     unique_levels = set()
     cutoff = 지금() - timedelta(seconds=window_sec)
 
-    # 1) df에서 최근 체결된 차수
+    # 1) df에서 최근 체결된 차수 (상승 중 체결되는 '공백복원예약' 매수는 급락 쿨링 집계에서 제외)
     if df is not None and not df.empty and "매수날짜" in df.columns and "차수" in df.columns:
         dates = pd.to_datetime(df["매수날짜"], errors="coerce")
-        recent = df.loc[dates >= cutoff]
+        mask = dates >= cutoff
+        if "매수유형" in df.columns:
+            mask = mask & (df["매수유형"].fillna("") != "공백복원예약")
+        recent = df.loc[mask]
         if not recent.empty:
             for lvl in recent["차수"].dropna():
                 try:
@@ -1724,10 +1762,17 @@ def 쿨링공백복원_실행(
             "종목": Ticker, "차수": 1, "매수날짜": 지금(),
             "매수가": rebase_px, "매수수량": rebase_qty, "매수금액": rebase_cost,
             "매수시현재가": rebase_px, "매수슬리피지%": round(rebase_slip, 4), "최고수익률": 0.0,
+            "매수유형": "바닥Rebase",
         }])
         df = pd.concat([df, new_row], ignore_index=True)
         매매기록저장(df, file_name)
         return
+
+    # 기존 대기 중인 공백 복원 예약 정보 확인 (이전 공백 예약 차수 반영용)
+    prev_gap_state = 공백복원_상태로드(Ticker)
+    has_prev_gap, prev_next_gap_lvl, _, _ = 공백복원_예약차수_조회(Ticker)
+    prev_rem_count = int(prev_gap_state.get("remaining_count", 0) or 0) if has_prev_gap else 0
+    prev_P_prev = float(prev_gap_state.get("prev_price", 0.0) or 0.0) if has_prev_gap else 0.0
 
     # 1. 직전 체결가 P_prev 확인 (미청산 중 가장 낮은 매수가 = 최하위 차수)
     min_row = 미청산.sort_values(by=["매수가"]).iloc[0]
@@ -1735,11 +1780,12 @@ def 쿨링공백복원_실행(
 
     # 만약 직전 체결가보다 현재가가 더 높거나 같으면 공백 없음
     if P_prev <= rebase_px:
-        max_open_level = int(미청산["차수"].max())
+        max_open_level = max(int(미청산["차수"].max()), prev_next_gap_lvl)
         new_row = pd.DataFrame([{
             "종목": Ticker, "차수": max_open_level + 1, "매수날짜": 지금(),
             "매수가": rebase_px, "매수수량": rebase_qty, "매수금액": rebase_cost,
             "매수시현재가": rebase_px, "매수슬리피지%": round(rebase_slip, 4), "최고수익률": 0.0,
+            "매수유형": "바닥Rebase",
         }])
         df = pd.concat([df, new_row], ignore_index=True)
         매매기록저장(df, file_name)
@@ -1753,28 +1799,31 @@ def 쿨링공백복원_실행(
 
     # 공백 차수가 2개 미만이면(단순 1개 차수 하락) 일반 매수로 처리
     if N < 2:
-        max_open_level = int(미청산["차수"].max())
+        max_open_level = max(int(미청산["차수"].max()), prev_next_gap_lvl)
         new_row = pd.DataFrame([{
             "종목": Ticker, "차수": max_open_level + 1, "매수날짜": 지금(),
             "매수가": rebase_px, "매수수량": rebase_qty, "매수금액": rebase_cost,
             "매수시현재가": rebase_px, "매수슬리피지%": round(rebase_slip, 4), "최고수익률": 0.0,
+            "매수유형": "바닥Rebase",
         }])
         df = pd.concat([df, new_row], ignore_index=True)
         매매기록저장(df, file_name)
         return
 
-    # 3. 공백 복원 계획 차수 수 K_plan 결정 (최대 캡 적용)
-    K_plan = min(N - 1, MAX_GAP_CUT_LEVELS)
-    if K_plan <= 0:
-        max_open_level = int(미청산["차수"].max())
+    # 3. 공백 복원 계획 차수 수 K_new 결정 (최대 캡 적용, 기존 미소진 예약분은 손절 확정 후 병합)
+    K_new = min(N - 1, MAX_GAP_CUT_LEVELS)
+    if K_new <= 0:
+        max_open_level = max(int(미청산["차수"].max()), prev_next_gap_lvl)
         new_row = pd.DataFrame([{
             "종목": Ticker, "차수": max_open_level + 1, "매수날짜": 지금(),
             "매수가": rebase_px, "매수수량": rebase_qty, "매수금액": rebase_cost,
             "매수시현재가": rebase_px, "매수슬리피지%": round(rebase_slip, 4), "최고수익률": 0.0,
+            "매수유형": "바닥Rebase",
         }])
         df = pd.concat([df, new_row], ignore_index=True)
         매매기록저장(df, file_name)
         return
+    K_plan = min(K_new + prev_rem_count, MAX_GAP_CUT_LEVELS)
 
     # 4. 자금 충분 조건 및 손절 여부 판정 (GAP_CUT_MODE)
     default_amount = float(trade_config[Ticker]["grid_config"].get(1, {}).get("매수금액", 143.0))
@@ -1807,7 +1856,7 @@ def 쿨링공백복원_실행(
 
     # 5. 상위 차수 강제 손절 분기 실행
     if should_cut:
-        K_cut = min(K_plan, len(미청산))
+        K_cut = min(K_new, len(미청산))
         if K_cut > 0:
             print(
                 f"🌪️ [공백 복원 롤다운 발동] {Ticker} | 직전가={P_prev:.4f} ➔ 체결가={rebase_px:.4f} "
@@ -1868,7 +1917,10 @@ def 쿨링공백복원_실행(
     for new_level, (r_idx, _) in enumerate(잔여_정렬.iterrows(), start=1):
         df.loc[r_idx, "차수"] = new_level
 
-    # 7. 바닥 Rebase 체결 차수 번호 확정 (M + K_plan + 1 차수)
+    # 7. 바닥 Rebase 체결 차수 번호 확정 (기존 미소진 공백 예약 차수 반영: M + K_plan + 1 차수)
+    preserved_prev_gap = max(0, prev_rem_count - K_cut)
+    K_plan = min(K_new + preserved_prev_gap, MAX_GAP_CUT_LEVELS)
+    effective_P_prev = max(P_prev, prev_P_prev) if preserved_prev_gap > 0 else P_prev
     rebase_level = M + K_plan + 1
     new_row = pd.DataFrame([{
         "종목": Ticker,
@@ -1880,6 +1932,7 @@ def 쿨링공백복원_실행(
         "매수시현재가": rebase_px,
         "매수슬리피지%": round(rebase_slip, 4),
         "최고수익률": 0.0,
+        "매수유형": "바닥Rebase",
     }])
     df = pd.concat([df, new_row], ignore_index=True)
     매매기록저장(df, file_name)
@@ -1891,15 +1944,15 @@ def 쿨링공백복원_실행(
     ))
     _그리드_체결_일괄전송(cut_records)
 
-    # 8. 바닥 체결가 바로 위 1차 동적 예약 목표가 산출 (P_prev와 0.7% 미만 근접 시 생략)
+    # 8. 바닥 체결가 바로 위 1차 동적 예약 목표가 산출 (effective_P_prev와 0.7% 미만 근접 시 생략)
     first_target = round(rebase_px * (1.0 + interval_pct / 100.0), 6)
-    safety_ceiling = P_prev * (1.0 - interval_pct / 100.0) if P_prev > 0 else 0.0
+    safety_ceiling = effective_P_prev * (1.0 - interval_pct / 100.0) if effective_P_prev > 0 else 0.0
 
     orders = []
     remaining_count = 0
-    if P_prev > 0 and first_target >= safety_ceiling:
+    if effective_P_prev > 0 and first_target >= safety_ceiling:
         print(
-            f"⚠️ [공백 복원] 첫 예약 목표가({first_target:.4f})가 기준가({P_prev:.4f})와 {interval_pct}% 이내로 근접하여 예약 배치 생략",
+            f"⚠️ [공백 복원] 첫 예약 목표가({first_target:.4f})가 기준가({effective_P_prev:.4f})와 {interval_pct}% 이내로 근접하여 예약 배치 생략",
             flush=True
         )
     else:
@@ -1920,7 +1973,7 @@ def 쿨링공백복원_실행(
         "base_price": rebase_px,
         "base_level": rebase_level,
         "top_ceiling": M,
-        "prev_price": P_prev,
+        "prev_price": effective_P_prev,
         "gap_pct": round(Gap_pct, 4)
     })
     잔고부족_트래커_클리어(Ticker)
@@ -2090,6 +2143,12 @@ def 비상_증거금확보_쿨링공백복원_실행(
         print(f"⚠️ [비상 롤다운] {Ticker} 미청산 포지션이 없어 손절 불가", flush=True)
         return False
 
+    # 기존 대기 중인 공백 복원 예약 정보 확인 (이전 공백 예약 차수 반영용)
+    prev_gap_state = 공백복원_상태로드(Ticker)
+    has_prev_gap, _, _, _ = 공백복원_예약차수_조회(Ticker)
+    prev_rem_count = int(prev_gap_state.get("remaining_count", 0) or 0) if has_prev_gap else 0
+    prev_P_prev = float(prev_gap_state.get("prev_price", 0.0) or 0.0) if has_prev_gap else 0.0
+
     # 1. 쿨링 전 마지막 체결가 P_prev 확인 (미청산 중 가장 낮은 매수가 = 최하위 차수)
     min_row = 미청산.sort_values(by=["매수가"]).iloc[0]
     P_prev = float(min_row["매수가"])
@@ -2202,8 +2261,11 @@ def 비상_증거금확보_쿨링공백복원_실행(
     for new_level, (r_idx, _) in enumerate(잔여_정렬.iterrows(), start=1):
         df.loc[r_idx, "차수"] = new_level
 
-    # 8. 바닥 Rebase 체결 차수 번호 확정 (M + K + 1 차수)
-    rebase_level = M + K + 1
+    # 8. 바닥 Rebase 체결 차수 번호 확정 (기존 미소진 공백 예약 차수 반영: M + total_K_plan + 1 차수)
+    preserved_prev_gap = max(0, prev_rem_count - K)
+    total_K_plan = min(K + preserved_prev_gap, MAX_GAP_CUT_LEVELS)
+    effective_P_prev = max(P_prev, prev_P_prev) if preserved_prev_gap > 0 else P_prev
+    rebase_level = M + total_K_plan + 1
     new_row = pd.DataFrame([{
         "종목": Ticker,
         "차수": rebase_level,
@@ -2214,6 +2276,7 @@ def 비상_증거금확보_쿨링공백복원_실행(
         "매수시현재가": 현재가,
         "매수슬리피지%": round(매수슬리피지, 4),
         "최고수익률": 0.0,
+        "매수유형": "바닥Rebase",
     }])
     df = pd.concat([df, new_row], ignore_index=True)
     매매기록저장(df, file_name)
@@ -2227,13 +2290,13 @@ def 비상_증거금확보_쿨링공백복원_실행(
     # 9. 바닥 실제체결가(P_real_fill) 기준 동적 예약 목표가 산출 (+0.7%)
     default_amount = float(trade_config[Ticker]["grid_config"].get(1, {}).get("매수금액", 143.0))
     first_target = round(실제체결가 * (1.0 + interval_pct / 100.0), 6)
-    safety_ceiling = P_prev * (1.0 - interval_pct / 100.0) if P_prev > 0 else 0.0
+    safety_ceiling = effective_P_prev * (1.0 - interval_pct / 100.0) if effective_P_prev > 0 else 0.0
 
     orders = []
     remaining_count = 0
-    if P_prev > 0 and first_target >= safety_ceiling:
+    if effective_P_prev > 0 and first_target >= safety_ceiling:
         print(
-            f"⚠️ [비상 롤다운] 첫 예약 목표가({first_target:.4f})가 기준가({P_prev:.4f})와 {interval_pct}% 이내로 근접하여 예약 배치 생략",
+            f"⚠️ [비상 롤다운] 첫 예약 목표가({first_target:.4f})가 기준가({effective_P_prev:.4f})와 {interval_pct}% 이내로 근접하여 예약 배치 생략",
             flush=True
         )
     else:
@@ -2244,17 +2307,17 @@ def 비상_증거금확보_쿨링공백복원_실행(
             "amount_usdt": default_amount,
             "created_at": 지금().strftime("%Y-%m-%d %H:%M:%S")
         })
-        remaining_count = K
+        remaining_count = total_K_plan
 
     공백복원_상태저장(Ticker, {
         "orders": orders,
         "remaining_count": remaining_count,
-        "total_planned": K,
+        "total_planned": total_K_plan,
         "last_rebalance": 지금().strftime("%Y-%m-%d %H:%M:%S"),
         "base_price": 실제체결가,
         "base_level": rebase_level,
         "top_ceiling": M,
-        "prev_price": P_prev,
+        "prev_price": effective_P_prev,
         "gap_pct": round(Gap_pct, 4)
     })
 
@@ -2352,10 +2415,20 @@ def 공백복원_예약매수_감시(Ticker: str, 현재가: float) -> bool:
     # 1) 역순 차수 배정: 바닥 Rebase 차수(예: 25) 기준 -1씩 카운트다운 (24차, 23차...)
     rebase_level = int(state.get("base_level", 25))
     current_step = int(target_order.get("step", 1))
-    assigned_level = rebase_level - current_step
+    assigned_level = int(target_order.get("level", rebase_level - current_step) or (rebase_level - current_step))
 
     file_name = trade_config[Ticker]["file_name"]
     df = 매매기록불러오기(file_name)
+
+    # 이미 해당 차수가 미청산 보유 중이면 상단(top_ceiling + 1) 방향으로 빈 차수 탐색 (중복 차수 방지)
+    open_lvl_set = set(int(x) for x in df[df["매도날짜"].isnull()]["차수"].dropna()) if (df is not None and not df.empty) else set()
+    if assigned_level in open_lvl_set:
+        top_ceil = int(state.get("top_ceiling", 0) or 0)
+        candidate = assigned_level - 1
+        while candidate > top_ceil and candidate in open_lvl_set:
+            candidate -= 1
+        if candidate > top_ceil and candidate >= 1:
+            assigned_level = candidate
 
     temp_row = pd.DataFrame([{
         "종목": Ticker,
@@ -2367,6 +2440,7 @@ def 공백복원_예약매수_감시(Ticker: str, 현재가: float) -> bool:
         "매수시현재가": 현재가,
         "매수슬리피지%": round(매수슬리피지, 4),
         "최고수익률": 0.0,
+        "매수유형": "공백복원예약",
     }])
     # 기존 행들의 차수는 절대로 덮어쓰지 않고 새 행만 추가!
     df = pd.concat([df, temp_row], ignore_index=True)
@@ -2536,8 +2610,7 @@ def 시작시_매수기준_요약(Ticker: str, 현재가: float = 0.0) -> str:
     다음차수: Optional[int] = None
     open_lvls_init = 미청산["차수"] if not 미청산.empty else pd.Series(dtype=int)
     max_open_lvl_init = int(open_lvls_init.max()) if not open_lvls_init.empty else 0
-    gap_state_init = 공백복원_상태로드(Ticker) if GAP_RECONSTRUCTION_ENABLE else {}
-    has_gap_orders_init = bool(gap_state_init.get("orders", []))
+    has_gap_orders_init, next_gap_lvl_init, next_gap_px_init, pending_gap_lvls_init = 공백복원_예약차수_조회(Ticker)
 
     for 차수 in sorted(grid.keys()):
         해당_미청산 = 미청산[미청산["차수"] == 차수] if not 미청산.empty else pd.DataFrame()
@@ -2546,13 +2619,13 @@ def 시작시_매수기준_요약(Ticker: str, 현재가: float = 0.0) -> str:
         if 차수 == 1:
             다음차수 = 1
             break
-        # 공백 복원 예약 대기 중이면 상단 미복원 공백 차수는 건너뛰고 하향 차수에서 다음 차수 탐색
-        if has_gap_orders_init and max_open_lvl_init > 0 and 차수 < max_open_lvl_init:
+        # 공백 복원 예약 대기 중이면 대기 중인 예약 차수(next_gap_lvl_init 이하 상단 미복원 차수)는 건너뛰고 하향 차수에서 다음 차수 탐색
+        if has_gap_orders_init and (차수 in pending_gap_lvls_init or (next_gap_lvl_init > 0 and 차수 <= next_gap_lvl_init)):
             continue
         prev_open = 미청산[미청산["차수"] == 차수 - 1] if not 미청산.empty else pd.DataFrame()
         if prev_open.empty:
             v_prev = 잔고부족_가상차수_조회(Ticker, 차수 - 1)
-            if v_prev is None:
+            if v_prev is None and not (has_gap_orders_init and (차수 - 1) == next_gap_lvl_init and next_gap_px_init > 0):
                 break
         다음차수 = 차수
         break
@@ -2626,8 +2699,15 @@ def 시작시_매수기준_요약(Ticker: str, 현재가: float = 0.0) -> str:
                 출처 = f"{다음차수 - 1}차 매수가"
             else:
                 v_prev = 잔고부족_가상차수_조회(Ticker, 다음차수 - 1)
-                기준가 = float(v_prev["price"]) if v_prev else 0.0
-                출처 = f"{다음차수 - 1}차 가상기준가"
+                if v_prev is not None:
+                    기준가 = float(v_prev["price"])
+                    출처 = f"{다음차수 - 1}차 가상기준가"
+                elif has_gap_orders_init and (다음차수 - 1) == next_gap_lvl_init and next_gap_px_init > 0:
+                    기준가 = float(next_gap_px_init)
+                    출처 = f"{다음차수 - 1}차 공백예약가"
+                else:
+                    기준가 = 0.0
+                    출처 = f"{다음차수 - 1}차 기준가"
             목표가 = 기준가 * (1 + 간격 / 100.0)
             base_item = {
                 "price": 기준가,
@@ -2654,6 +2734,7 @@ def 최근매수횟수(df: pd.DataFrame, window_sec: int) -> int:
     """
     엑셀 기준 최근 window_sec 초 이내 '고유 차수' 개수.
     동일 차수 반복 매수(매도 후 재진입 등)는 1회로만 집계 → 급락 연타만 쿨링 대상으로.
+    상승 중 체결되는 '공백복원예약' 매수는 쿨링 집계에서 제외.
     """
     if df is None or df.empty or "매수날짜" not in df.columns:
         return 0
@@ -2661,7 +2742,10 @@ def 최근매수횟수(df: pd.DataFrame, window_sec: int) -> int:
         return 0
     cutoff = 지금() - timedelta(seconds=window_sec)
     dates = pd.to_datetime(df["매수날짜"], errors="coerce")
-    recent = df.loc[dates >= cutoff]
+    mask = dates >= cutoff
+    if "매수유형" in df.columns:
+        mask = mask & (df["매수유형"].fillna("") != "공백복원예약")
+    recent = df.loc[mask]
     if recent.empty:
         return 0
     return int(recent["차수"].nunique())
@@ -3442,10 +3526,8 @@ def 매수실행(Ticker: str, 현재가: float):
     if 공백복원_예약매수_감시(Ticker, 현재가):
         return
 
-    # 공백 복원 예약 대기 여부 확인 (예약 대기 중 일반 루프의 공백 차수 침범 방지)
-    gap_state = 공백복원_상태로드(Ticker) if GAP_RECONSTRUCTION_ENABLE else {}
-    has_pending_gap_orders = bool(gap_state.get("orders", []))
-    gap_base_level = int(gap_state.get("base_level", 0))
+    # 공백 복원 예약 대기 여부 확인 (예약 대기 중 일반 루프의 공백 차수 침범 방지 및 직전 예약 차수 반영)
+    has_pending_gap_orders, next_gap_level, next_gap_target_price, pending_gap_levels = 공백복원_예약차수_조회(Ticker)
 
     # 쿨링 중이면 매수만 차단 (매도는 별도)
     if 쿨링여부(Ticker):
@@ -3489,9 +3571,9 @@ def 매수실행(Ticker: str, 현재가: float):
         if not df[(df["차수"] == 차수) & (df["매도날짜"].isnull())].empty:
             continue
 
-        # 공백 복원 예약이 대기 중일 때, 상단 미복원 공백 차수(현재 열려있는 최하단 차수보다 작은 미보유 차수)는 일반 하향 매수 차단
-        # 단, 현재 열려있는 최하단 차수보다 큰 하향 차수(차수 > max_open_level)는 정상적인 하락 매수/더미 매수 진행
-        if has_pending_gap_orders and max_open_level > 0 and 차수 < max_open_level:
+        # 공백 복원 예약이 대기 중일 때, 대기 중인 공백 예약 차수(next_gap_level 이하 상단 미복원 차수)는 일반 하향 매수 차단
+        # 단, 이미 복원 완료된 하단 차수 및 그 아래 차수(차수 > next_gap_level)는 정상적인 하락 매수/더미 매수 진행
+        if has_pending_gap_orders and (차수 in pending_gap_levels or (next_gap_level > 0 and 차수 <= next_gap_level)):
             continue
 
         if 차수 == 1:
@@ -3510,11 +3592,14 @@ def 매수실행(Ticker: str, 현재가: float):
         else:
             prev_open = df[(df["차수"] == 차수 - 1) & (df["매도날짜"].isnull())]
             if prev_open.empty:
-                # 잔고 부족으로 df에 기록되지 못한 직전 가상 차수 시도가 있는지 확인
+                # 잔고 부족으로 df에 기록되지 못한 직전 가상 차수 또는 대기 중인 직전 공백 복원 예약 차수 확인
                 v_prev = 잔고부족_가상차수_조회(Ticker, 차수 - 1)
-                if v_prev is None:
+                if v_prev is not None:
+                    기준가 = float(v_prev["price"])
+                elif has_pending_gap_orders and (차수 - 1) == next_gap_level and next_gap_target_price > 0:
+                    기준가 = float(next_gap_target_price)
+                else:
                     continue
-                기준가 = float(v_prev["price"])
             else:
                 기준가 = float(prev_open.iloc[-1]["매수가"])
 
@@ -3686,6 +3771,7 @@ def 매수실행(Ticker: str, 현재가: float):
             "매수시현재가": 현재가,
             "매수슬리피지%": round(매수슬리피지, 4),
             "최고수익률": 0.0,
+            "매수유형": "바닥Rebase" if used_rebase else "일반매수",
         }])
         df = pd.concat([df, new_row], ignore_index=True)
         매매기록저장(df, file_name)
@@ -5014,9 +5100,11 @@ def main_loop():
                             # 이익 보존선 하회 시 방어 매도 허용
                             매도발생 = 매도실행(Ticker, 현재가, riding_mode=TREND_RIDING_SELL_MODE)
                             더미_가상매도_감시_및_실행(Ticker, 현재가)
-                        # 매도 미발생 시 매수 유지 (하단 방어)
+                        # 매도 미발생 시 매수 유지 (하단 방어), 매도 발생 시에도 상승 중 공백 복원 예약 매수는 감시
                         if not 매도발생:
                             매수실행(Ticker, 현재가)
+                        elif not 총수익청산락_여부(Ticker):
+                            공백복원_예약매수_감시(Ticker, 현재가)
                     else:
                         # ── 상태 3 및 상태 1: [추세 꺾임 / 그리드 수비 모드] ──
                         # 1) 목표 순익 달성 검사 및 전량 청산 판단 (꺾임 직후 또는 정기 주기)
@@ -5032,6 +5120,8 @@ def main_loop():
                         더미_가상매도_감시_및_실행(Ticker, 현재가)
                         if not 매도발생:
                             매수실행(Ticker, 현재가)
+                        elif not 총수익청산락_여부(Ticker):
+                            공백복원_예약매수_감시(Ticker, 현재가)
                 except Exception as e:
                     print(f"[{Ticker} 처리 오류] {e}")
 
