@@ -808,3 +808,17 @@
   - `python -m py_compile Grid_Bitget.py` 정적 구문 컴파일 검증 완료 (오류 0건 통과)
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/`) 파일 배포 및 원격 구문 검증 완료 (`REMOTE_COMPILE_OK`)
   - 프로세스 안전 재기동(`pkill -15`) 및 텔레그램 종료(`⏹️ [비트겟 그리드봇 종료]`)/시작(`🚀 [비트겟 그리드봇 시작]`) 메시지, 실시간 폴링 로그 정상 가동 확인
+
+## [2026-11-06 10:50] 업데이트 이력 (Commit ID: 16d8f0f)
+- **수정 내용**:
+  - **구글 시트 원장 로거(`sheets_logger.py`) 비동기 타임아웃 확대, 락 대기 재시도(`retry`) 분류 보강 및 보안 강화를 위한 관리용 원격 웹훅 비활성화 ([`sheets_logger.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/sheets_logger.py))**:
+    - **1) 비동기 전송(`async_mode=True`) 시 HTTP 타임아웃 확대 (`_send`)**:
+      - 기존 `max(self.timeout, 10)`(10초)에서 비동기 모드 시 `max(self.timeout, 30 if self.async_mode else 10)`(30초)로 확대하여, Apps Script 락 대기 및 다중 시트 처리 중 조기 타임아웃으로 인한 중복 재전송 빈도 완화
+    - **2) Apps Script 락 대기 초과 및 일시적 서버 오류 시 자동 재전송(`retry`) 분류 보강 (`_send`)**:
+      - 응답 JSON의 `retryable=True`, `code in ("LOCK_TIMEOUT", "INTERNAL_ERROR")`, 또는 에러 메시지에 `"서버 처리 중 오류"`, `"락"`, `"잠금"`이 포함된 경우 즉시 버리지(`"reject"`) 않고 `"retry"`를 반환하여 로컬 대기 큐(`.sheets_pending_*.json`)에 보관 후 백그라운드 워커가 자동 재전송하도록 개선
+    - **3) 보안 정책에 따른 관리용 원격 웹훅 트리거 비활성화 (`trigger_monthly_archive`, `trigger_yearly_sharding`, `diagnose_capacity`)**:
+      - 외부 웹훅을 통한 `ARCHIVE_MONTHLY`, `SHARD_YEARLY`, `DIAGNOSE` 원격 호출을 비활성화하고 Apps Script 편집기(`archiveMonthlyTrades`, `shardYearlyArchiveSpreadsheet`, `runFullDiagnostic`) 또는 GAS 시간 기반 트리거에서 직접 실행하도록 안내 메시지 출력으로 전환
+- **검증 결과**:
+  - `python -m py_compile sheets_logger.py` 로컬 및 EC2 원격 정적 구문 검증 완료 (`REMOTE_COMPILE_OK`, 오류 0건)
+  - EC2 실서버(`ec2:/var/autobot/bitget_grid/sheets_logger.py`) 배포 및 프로세스 안전 재기동(`pkill -15`) 완료
+  - 텔레그램 종료(`⏹️ [비트겟 그리드봇 종료]`)/시작(`🚀 [비트겟 그리드봇 시작]`) 안내 메시지 발송 및 실시간 폴링 로그 정상 가동 확인
