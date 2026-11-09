@@ -408,17 +408,17 @@ MA_4H_CACHE_SECONDS = 15    # 4시간봉 캐시 15초
 #     1단계(0.7% 보존선) 및 2단계(0.9% 이상 도달 후 고점 대비 -0.2%p 하락) 모두 매도 허용.
 TREND_RIDING_SELL_MODE = "STAGE1_ONLY"  # "OFF" | "STAGE1_ONLY" | "ALL"
 
-# 📌 TREND_RIDING_EXIT_SELL_MODE = "TRAILING"
+# 📌 TREND_RIDING_EXIT_SELL_MODE = "IMMEDIATE"
 # - 추세 라이딩 종료(5MA -0.5% 동시 이탈) 시점에 보유 차수들의 매도 처리 방식을 결정합니다.
-# - "TRAILING" (기본값/권장 — 기존 2단계 트레일링 매도와 일관성 유지):
+# - "TRAILING":
 #     종료 시점의 수익률을 새로운 고점(최고수익률) 기준으로 재설정한 뒤 2단계 트레일링 적용:
 #       · +0.9%(TRAIL_STAGE2_PCT) 이상: 2단계 트레일링 활성화 (고점 대비 -0.2% 하락 시 매도, 추가 상승 시 고점 갱신)
 #       · +0.7% ~ +0.9% 미만: 1단계 보존선(+0.7%) 활성화 (+0.7% 이하 하회 시 매도, +0.9% 돌파 시 2단계 전환)
 #       · +0.7% 미만: 이전 고점 기록 초기화 후 홀딩 (추후 +0.7% 도달 시 트레일링 작동)
-# - "IMMEDIATE":
+# - "IMMEDIATE" (기본값/권장 — 추세 이탈 확정 시 추가 하락으로 인한 이익 반납 방지):
 #     종료 시점에 수익률이 +0.7%(TRAIL_STAGE1_PCT) 이상인 차수는 즉시 시장가 익절 매도하고,
 #     +0.7% 미만인 차수는 이전 고점 기록을 초기화한 뒤 일반 트레일링으로 전환.
-TREND_RIDING_EXIT_SELL_MODE = "TRAILING"  # "TRAILING" | "IMMEDIATE"
+TREND_RIDING_EXIT_SELL_MODE = "IMMEDIATE"  # "TRAILING" | "IMMEDIATE"
 
 
 # --- 트레일링 매도 설정 (2단계 하이브리드) ---
