@@ -822,3 +822,16 @@
   - `python -m py_compile sheets_logger.py` 로컬 및 EC2 원격 정적 구문 검증 완료 (`REMOTE_COMPILE_OK`, 오류 0건)
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/sheets_logger.py`) 배포 및 프로세스 안전 재기동(`pkill -15`) 완료
   - 텔레그램 종료(`⏹️ [비트겟 그리드봇 종료]`)/시작(`🚀 [비트겟 그리드봇 시작]`) 안내 메시지 발송 및 실시간 폴링 로그 정상 가동 확인
+
+## [2026-11-09 20:54] 업데이트 이력 (Commit ID: f28dd63)
+- **수정 내용**:
+  - **추세 라이딩 종료 시 매도 처리 방식(`TREND_RIDING_EXIT_SELL_MODE`) 기본값을 `"TRAILING"` ➔ `"IMMEDIATE"`(즉시 익절)로 변경 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
+    - **1) 변경 배경**:
+      - 추세 라이딩 종료 조건(`현재가 < 4시간봉 5MA * 0.995`) 자체가 이미 고점 대비 하락하여 4시간봉 5MA 지지선을 `-0.5%` 이탈한 시점이므로, 종료 시점 이후 트레일링 조건(`-0.2%p` 추가 하락)을 다시 기다릴 경우 하방 관성으로 인해 보유 수익 차수마다 `0.1% ~ 0.2%p`의 이익을 추가로 반납하는 손실 발생
+    - **2) `TREND_RIDING_EXIT_SELL_MODE = "IMMEDIATE"` 적용 (`Grid_Bitget.py:L421`)**:
+      - 추세 라이딩 종료(`exit_riding=True`) 시점에 현재 수익률이 `+0.7%`(`TRAIL_STAGE1_PCT`) 이상인 모든 보유 차수는 트레일링 대기 없이 즉시 시장가로 익절 매도(`라이딩종료-즉시익절`)하여 수익을 확정하고 현금 및 슬롯 회수
+      - 라이딩 중 `+0.7%`(또는 `+0.9%`) 이상 도달했다가 종료 시점에 `+0.7%` 이하로 밀린 차수는 `경계틱_보존매도` 안전장치에 의해 즉시 보존 매도 처리되며, 라이딩 기간 내내 `+0.7%`에 도달한 적 없는 `+0.7%` 미만 차수만 고점 초기화 후 일반 트레일링으로 전환
+- **검증 결과**:
+  - `python -m py_compile Grid_Bitget.py` 로컬 및 EC2 원격 정적 구문 검증 완료 (`REMOTE_COMPILE_OK`, 오류 0건)
+  - EC2 실서버(`ec2:/var/autobot/bitget_grid/Grid_Bitget.py`) 자동 배포 및 프로세스 안전 재기동(`pkill -15`) 완료
+  - 시작 배너(`라이딩 종료 시 매도: [IMMEDIATE] 종료 시점 +0.7% 이상 즉시 익절`) 및 텔레그램 시작(`🚀 [비트겟 그리드봇 시작]`) 메시지, 실시간 폴링 로그 정상 가동 확인
