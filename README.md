@@ -867,3 +867,13 @@
   - `python -m py_compile Grid_Bitget.py` 로컬 및 EC2 원격 정적 구문 검증 완료 (`REMOTE_COMPILE_OK`, 오류 0건)
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/Grid_Bitget.py`) 자동 배포 및 프로세스 안전 재기동(`pkill -15`) 완료
   - 텔레그램 종료(`⏹️ [비트겟 그리드봇 종료]`)/시작(`🚀 [비트겟 그리드봇 시작]`) 메시지 발송 및 크론탭 재실행 시 싱글톤 노이즈 로그 미출력 정상 확인
+
+## [2026-11-10 14:48] 업데이트 이력 (Commit ID: c74dbc3)
+- **수정 내용**:
+  - **대시보드/구글 시트 봇 상태 동기화(`봇_상태_동기화`) 시 실시간 보유금 현황(`balance`) 스냅샷 전송 추가 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
+    - `봇_상태_동기화(Ticker)` 내부에서 `보유금_현황_조회(Ticker)`를 호출하여 현재 진입보유금(`entry_usdt`), 가용 잔여보유금(`free_usdt`), 총보유금(`total_usdt`)을 `state_payload["balance"]` 객체로 함께 전송하도록 개선 (`Grid_Bitget.py:L1542-L1550`)
+    - 매수·매도 체결 및 봇 기동/상태 변경 시마다 대시보드에서 실시간 계좌 잔고 및 투입 비중을 즉시 확인할 수 있도록 연동
+- **검증 결과**:
+  - `python -m py_compile Grid_Bitget.py` 로컬 및 EC2 원격 정적 구문 검증 완료 (`REMOTE_COMPILE_OK`, 오류 0건)
+  - EC2 실서버(`ec2:/var/autobot/bitget_grid/Grid_Bitget.py`) 자동 배포 및 프로세스 안전 재기동(`pkill -15`) 완료
+  - 텔레그램 종료(`⏹️ [비트겟 그리드봇 종료]`)/시작(`🚀 [비트겟 그리드봇 시작]`) 안내 메시지 발송 및 실시간 폴링/상태 동기화 정상 가동 확인
