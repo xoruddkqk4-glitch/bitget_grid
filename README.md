@@ -835,3 +835,22 @@
   - `python -m py_compile Grid_Bitget.py` 로컬 및 EC2 원격 정적 구문 검증 완료 (`REMOTE_COMPILE_OK`, 오류 0건)
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/Grid_Bitget.py`) 자동 배포 및 프로세스 안전 재기동(`pkill -15`) 완료
   - 시작 배너(`라이딩 종료 시 매도: [IMMEDIATE] 종료 시점 +0.7% 이상 즉시 익절`) 및 텔레그램 시작(`🚀 [비트겟 그리드봇 시작]`) 메시지, 실시간 폴링 로그 정상 가동 확인
+
+## [2026-11-10 12:01] 업데이트 이력 (Commit ID: 4619877)
+- **수정 내용**:
+  - **그리드 전략 추세 라이딩(3-State Switching Engine) 기준선을 `4시간봉 5MA (4h 5MA)` ➔ `1시간봉 5MA (1h 5MA)`로 변경 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
+    - **1) 타임프레임 설정 및 캐시 상수 변경 (`Grid_Bitget.py:L378-L399`)**:
+      - `MA_TIMEFRAME_1H = "1h"` 추가 및 기본 타임프레임 상수를 `MA_TIMEFRAME = MA_TIMEFRAME_1H` (`"1h"`)로 변경
+      - 1시간봉 OHLCV 호출 캐시 주기 `MA_1H_CACHE_SECONDS = 15` (15초) 설정
+    - **2) 5MA 계산 및 보조 함수 기본값 전환 (`이동평균_조회`, `is_ma5_rising`, `현재_MA5_정보`)**:
+      - `이동평균_조회(Ticker, timeframe=MA_TIMEFRAME)`에서 `timeframe == "1h"` 시 15초(`MA_1H_CACHE_SECONDS`) 캐시 TTL이 적용되도록 확장하고, `is_ma5_rising` 및 `현재_MA5_정보`가 기본값으로 1시간봉 5MA를 조회하도록 변경
+    - **3) 추세 라이딩 진입·종료 판정 및 알림 메시지 전환 (`추세라이딩_상태체크`)**:
+      - **진입 조건**: `1시간봉 5MA 상승 중 (ma_1h_today > ma_1h_prev)` **AND** `현재가 >= ma_1h_today` 충족 시 상태 2(추세 라이딩) 진입 및 `🚀 *[{종목}_추세 라이딩 진입]*` 알림 발송
+      - **종료 조건**: `현재가 < 1시간봉 5MA * 0.995` (`-0.5%` 이탈) 시 즉시 추세 라이딩 종료(`방금_꺾임=True`) 및 `🛑 *[{종목}_추세 라이딩 종료]*` 알림 발송 후 즉시 익절(`IMMEDIATE`)/수비 모드 전환
+      - 봇 시작 배너 및 텔레그램 시작 알림 문구를 `1시간봉 5MA 추세 라이딩`으로 업데이트
+    - **4) 대시보드/구글 시트 상태 동기화 (`봇_상태_동기화`)**:
+      - `trend_riding` 페이로드에 `timeframe` (`"1h"`), `ma_1h_today`, `ma_1h_prev`를 추가하고 기존 대시보드 파서 호환을 위해 `ma_4h_today`, `ma_4h_prev` 키에도 1시간봉 5MA 값을 함께 기록
+- **검증 결과**:
+  - `python -m py_compile Grid_Bitget.py` 로컬 및 EC2 원격 정적 구문 검증 완료 (`REMOTE_COMPILE_OK`, 오류 0건)
+  - EC2 실서버(`ec2:/var/autobot/bitget_grid/Grid_Bitget.py`) 자동 배포 및 프로세스 안전 재기동(`pkill -15`) 완료
+  - 시작 배너(`3-State 엔진: 활성화 (1시간봉 5MA -0.5% 지지선 이탈 필터)`) 및 텔레그램 종료(`⏹️ [비트겟 그리드봇 종료]`)/시작(`🚀 [비트겟 그리드봇 시작]`) 메시지, 실시간 폴링 로그 정상 가동 확인
