@@ -179,6 +179,7 @@ import os
 import time
 import signal
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 import copy
 from typing import Dict, Any, Tuple, Optional, List
@@ -216,9 +217,10 @@ def 지금() -> datetime:
 # 봇이 두 개 돌면 같은 종목을 중복 매매하게 되므로 반드시 필요한 안전장치입니다.
 if singleton is not None:
     try:
+        logging.getLogger("tendo.singleton").setLevel(logging.CRITICAL)
         me = singleton.SingleInstance()
     except singleton.SingleInstanceException:
-        print("[싱글톤] 이미 실행 중 → 이번 실행은 즉시 종료합니다.")
+        # 크론탭 매분 실행 시 로그 파일 비대화 방지를 위해 무음(Silent) 종료
         sys.exit(0)
 
 
@@ -367,12 +369,12 @@ PROFIT_SOURCE = "EXCEL"
 # - 너무 크면 목표 도달 후 청산 지연 발생 가능
 TOTAL_PROFIT_CHECK_INTERVAL = 5
 
-# 📌 TOTAL_PROFIT_LOG_INTERVAL = 20
+# 📌 TOTAL_PROFIT_LOG_INTERVAL = 120
 # - 현재 총 수익을 콘솔/로그에 출력하는 주기 (폴링 횟수 단위)
-# - 20 = 매 20폴링(60초)마다 1회 출력 → 디버깅/모니터링용
+# - 120 = 매 120폴링(120초=2분)마다 1회 출력 → 디버깅/모니터링용 (PRICE_LOG_INTERVAL과 동일 주기)
 # - 출력 예: 💰 [총수익] 사이클=+4.68 (미실현=+1.23 + 누적=+53.45 - baseline=+50.00) (목표 50.0)
 # - 0 으로 두면 출력 안 함
-TOTAL_PROFIT_LOG_INTERVAL = 20
+TOTAL_PROFIT_LOG_INTERVAL = 120
 
 
 # --- 3-State Switching Engine (1시간봉 5MA 추세 라이딩) 설정 ⭐ ---
