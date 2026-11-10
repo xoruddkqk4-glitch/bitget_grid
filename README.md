@@ -854,3 +854,16 @@
   - `python -m py_compile Grid_Bitget.py` 로컬 및 EC2 원격 정적 구문 검증 완료 (`REMOTE_COMPILE_OK`, 오류 0건)
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/Grid_Bitget.py`) 자동 배포 및 프로세스 안전 재기동(`pkill -15`) 완료
   - 시작 배너(`3-State 엔진: 활성화 (1시간봉 5MA -0.5% 지지선 이탈 필터)`) 및 텔레그램 종료(`⏹️ [비트겟 그리드봇 종료]`)/시작(`🚀 [비트겟 그리드봇 시작]`) 메시지, 실시간 폴링 로그 정상 가동 확인
+
+## [2026-11-10 13:29] 업데이트 이력 (Commit ID: 9041551)
+- **수정 내용**:
+  - **EC2 실서버 로그 파일(`bitget-grid.log`) 비대화 방지를 위한 로그 다이어트 적용 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
+    - **1) 크론탭 매분 실행 시 싱글톤 중복 실행 로그 무음(Silent) 처리 (`Grid_Bitget.py:L218-L224`)**:
+      - `logging.getLogger("tendo.singleton").setLevel(logging.CRITICAL)`을 설정하여 `Another instance is already running, quitting.` 출력 억제
+      - `[싱글톤] 이미 실행 중 → 이번 실행은 즉시 종료합니다.` 출력문을 제거하고 즉시 `sys.exit(0)` 종료하도록 변경하여 하루 2,880줄의 중복 노이즈 로그 제거
+    - **2) 총수익 로그 출력 주기 완화 (`TOTAL_PROFIT_LOG_INTERVAL = 120`, `Grid_Bitget.py:L372-L377`)**:
+      - 1초 폴링(`POLL_INTERVAL = 1`) 환경에서 20초마다 찍히던 `💰 [총수익]` 로그 주기를 `20` ➔ `120`(120초=2분)으로 조정하여 현재가 출력(`PRICE_LOG_INTERVAL = 120`)과 주기를 일치시키고 일일 출력량을 4,320줄 ➔ 720줄(83% 감소)로 축소
+- **검증 결과**:
+  - `python -m py_compile Grid_Bitget.py` 로컬 및 EC2 원격 정적 구문 검증 완료 (`REMOTE_COMPILE_OK`, 오류 0건)
+  - EC2 실서버(`ec2:/var/autobot/bitget_grid/Grid_Bitget.py`) 자동 배포 및 프로세스 안전 재기동(`pkill -15`) 완료
+  - 텔레그램 종료(`⏹️ [비트겟 그리드봇 종료]`)/시작(`🚀 [비트겟 그리드봇 시작]`) 메시지 발송 및 크론탭 재실행 시 싱글톤 노이즈 로그 미출력 정상 확인
