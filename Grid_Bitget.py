@@ -1539,6 +1539,15 @@ def 봇_상태_동기화(Ticker: str):
         open_lots = _그리드_열린차수_스냅샷(Ticker)
         if open_lots is not None:
             state_payload["open_lots"] = open_lots
+        try:
+            진입보유금_sync, 잔여보유금_sync, 총보유금_sync = 보유금_현황_조회(Ticker)
+            state_payload["balance"] = {
+                "entry_usdt": round(float(진입보유금_sync), 4),
+                "free_usdt": round(float(잔여보유금_sync), 4) if 잔여보유금_sync is not None else None,
+                "total_usdt": round(float(총보유금_sync), 4) if 총보유금_sync is not None else None
+            }
+        except Exception:
+            pass
         sheet_logger.log_bot_state(state_payload, strategy_name="그리드")
     except Exception as e:
         print(f"[봇 상태 동기화 실패] {e}")
