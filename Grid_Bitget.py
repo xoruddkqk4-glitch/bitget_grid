@@ -375,26 +375,28 @@ TOTAL_PROFIT_CHECK_INTERVAL = 5
 TOTAL_PROFIT_LOG_INTERVAL = 20
 
 
-# --- 3-State Switching Engine (4시간봉 5MA 추세 라이딩) 설정 ⭐ ---
+# --- 3-State Switching Engine (1시간봉 5MA 추세 라이딩) 설정 ⭐ ---
 # 📌 TREND_RIDING_ENABLE = True
-# - True : 4시간봉 5선 상승 & 안착 시 매도 정지(포지션 100% 홀딩) & 4시간봉 5선 -0.5% 이탈 시 매도 재개
+# - True : 1시간봉 5선 상승 & 안착 시 매도 정지(포지션 100% 홀딩) & 1시간봉 5선 -0.5% 이탈 시 매도 재개
 # - False: 기능 비활성화 → 기존 그리드 매매만 수행
 TREND_RIDING_ENABLE = True
 
 # 📌 이동평균 계산 기준 캔들 및 기간
-# - 진입 및 해제 모두 4시간봉(4h) 5MA 단독 기준 사용 (일봉 후행성으로 인한 매매 지연 방지)
+# - 진입 및 해제 모두 1시간봉(1h) 5MA 단독 기준 사용 (상위봉 후행성으로 인한 매매 지연 방지)
 MA_TIMEFRAME_1D = "1d"
 MA_TIMEFRAME_4H = "4h"
-MA_TIMEFRAME = MA_TIMEFRAME_4H  # 기본 기준 타임프레임: 4시간봉(4h)
+MA_TIMEFRAME_1H = "1h"
+MA_TIMEFRAME = MA_TIMEFRAME_1H  # 기본 기준 타임프레임: 1시간봉(1h)
 MA_PERIOD = 5
 
 # 📌 추세 종료(지지선 이탈) 판정 버퍼 (%)
-# - 0.5% 이탈 기준: 현재가 < 4시간봉 5MA * (1 - 0.005) = 5MA * 0.995
+# - 0.5% 이탈 기준: 현재가 < 1시간봉 5MA * (1 - 0.005) = 5MA * 0.995
 TREND_EXIT_BUFFER_PCT = 0.5
 
 # 📌 fetch_ohlcv 거래소 호출 캐싱 주기 (초 단위, API Rate Limit 방어)
 MA_CACHE_SECONDS = 30       # 일봉 캐시 30초
 MA_4H_CACHE_SECONDS = 15    # 4시간봉 캐시 15초
+MA_1H_CACHE_SECONDS = 15    # 1시간봉 캐시 15초
 
 # 📌 TREND_RIDING_SELL_MODE = "STAGE1_ONLY"
 # - 추세 라이딩(상태 2) 중 매도 허용 범위를 결정합니다.
@@ -1507,8 +1509,8 @@ def 봇_상태_동기화(Ticker: str):
         i_state = 잔고부족_상태로드(Ticker)
         baseline, cycle_count = 총수익_baseline_상태조회(Ticker)
         t_state = 추세라이딩_상태로드(Ticker)
-        ma_4h_today, ma_4h_prev, rising_4h = 이동평균_조회(Ticker, timeframe=MA_TIMEFRAME_4H)
-        exit_line = round(float(ma_4h_today) * (1.0 - float(TREND_EXIT_BUFFER_PCT) / 100.0), 4) if ma_4h_today > 0 else 0.0
+        ma_1h_today, ma_1h_prev, rising_1h = 이동평균_조회(Ticker, timeframe=MA_TIMEFRAME)
+        exit_line = round(float(ma_1h_today) * (1.0 - float(TREND_EXIT_BUFFER_PCT) / 100.0), 4) if ma_1h_today > 0 else 0.0
 
         state_payload = {
             "symbol": Ticker,
@@ -1522,9 +1524,12 @@ def 봇_상태_동기화(Ticker: str):
             "trend_riding": {
                 "active": bool(t_state.get("is_riding", False)),
                 "entered_at": float(t_state.get("entered_at", 0.0) or 0.0),
-                "ma_4h_today": round(float(ma_4h_today), 4),
-                "ma_4h_prev": round(float(ma_4h_prev), 4),
-                "is_ma_rising": bool(rising_4h),
+                "timeframe": MA_TIMEFRAME,
+                "ma_1h_today": round(float(ma_1h_today), 4),
+                "ma_1h_prev": round(float(ma_1h_prev), 4),
+                "ma_4h_today": round(float(ma_1h_today), 4),
+                "ma_4h_prev": round(float(ma_1h_prev), 4),
+                "is_ma_rising": bool(rising_1h),
                 "exit_line": exit_line,
                 "buffer_pct": float(TREND_EXIT_BUFFER_PCT)
             }
@@ -3364,15 +3369,20 @@ def 추세라이딩_상태저장(Ticker: str, state: dict) -> None:
     except Exception as e:
         print(f"[추세라이딩 상태 저장 실패] {e}")
 
-def 이동평균_조회(Ticker: str, timeframe: str = "1d") -> Tuple[float, float, bool]:
+def 이동평균_조회(Ticker: str, timeframe: str = MA_TIMEFRAME) -> Tuple[float, float, bool]:
     """
-    지정 타임프레임(1d, 4h)의 5선(MA5) 계산 및 캐싱
+    지정 타임프레임(1d, 4h, 1h)의 5선(MA5) 계산 및 캐싱
     [반환] (ma_today, ma_yesterday, is_rising)
     """
     now = time.time()
     ticker_cache = _ma5_cache.setdefault(Ticker, {})
     cached = ticker_cache.get(timeframe)
-    cache_ttl = MA_4H_CACHE_SECONDS if timeframe == "4h" else MA_CACHE_SECONDS
+    if timeframe == "1h":
+        cache_ttl = MA_1H_CACHE_SECONDS
+    elif timeframe == "4h":
+        cache_ttl = MA_4H_CACHE_SECONDS
+    else:
+        cache_ttl = MA_CACHE_SECONDS
 
     if cached and (now - cached["time"] < cache_ttl):
         return cached["ma_today"], cached["ma_yesterday"], cached["is_rising"]
@@ -3402,67 +3412,67 @@ def 이동평균_조회(Ticker: str, timeframe: str = "1d") -> Tuple[float, floa
         return 0.0, 0.0, False
 
 def is_ma5_rising(Ticker: str) -> bool:
-    """4시간봉 5선 상승 여부 (하위 호환)"""
-    _, _, is_rising = 이동평균_조회(Ticker, timeframe=MA_TIMEFRAME_4H)
+    """1시간봉 5선 상승 여부 (하위 호환)"""
+    _, _, is_rising = 이동평균_조회(Ticker, timeframe=MA_TIMEFRAME)
     return is_rising
 
-def 현재_MA5_정보(Ticker: str, timeframe: str = "4h") -> Tuple[float, float, bool]:
+def 현재_MA5_정보(Ticker: str, timeframe: str = MA_TIMEFRAME) -> Tuple[float, float, bool]:
     """캐시된 ma_today, ma_yesterday, is_rising 반환 (모니터링용)"""
     return 이동평균_조회(Ticker, timeframe=timeframe)
 
 def 추세라이딩_상태체크(Ticker: str, 현재가: float) -> Tuple[bool, bool]:
     """
-    4시간봉(4h) 5MA 지지선 이탈 필터가 적용된 추세 라이딩(상태 2) 활성 여부 판정
+    1시간봉(1h) 5MA 지지선 이탈 필터가 적용된 추세 라이딩(상태 2) 활성 여부 판정
     [반환] (라이딩_중: bool, 방금_꺾임: bool)
     
-    1. 진입 조건 (4시간봉 5MA 단독):
-       - 4시간봉 5MA 상승 중 (ma_4h_today > ma_4h_prev)
-       - AND 현재가가 4시간봉 5MA 지지선 이상 (현재가 >= ma_4h_today) -> 진입 즉시 튕겨나감(핑퐁) 방지
+    1. 진입 조건 (1시간봉 5MA 단독):
+       - 1시간봉 5MA 상승 중 (ma_1h_today > ma_1h_prev)
+       - AND 현재가가 1시간봉 5MA 지지선 이상 (현재가 >= ma_1h_today) -> 진입 즉시 튕겨나감(핑퐁) 방지
     
-    2. 종료(꺾임) 조건 (4시간봉 5MA 단독):
-       - 현재가 < 4시간봉 5MA * (1 - TREND_EXIT_BUFFER_PCT/100) [기본 0.995]
+    2. 종료(꺾임) 조건 (1시간봉 5MA 단독):
+       - 현재가 < 1시간봉 5MA * (1 - TREND_EXIT_BUFFER_PCT/100) [기본 0.995]
        - 이탈 시 즉시 상태 2 종료 -> 방금_꺾임=True 반환 (청산/수비 검사 진입)
     """
     now = time.time()
     state = 추세라이딩_상태로드(Ticker)
-    ma_4h_today, ma_4h_prev, rising_4h = 이동평균_조회(Ticker, timeframe=MA_TIMEFRAME_4H)
+    ma_1h_today, ma_1h_prev, rising_1h = 이동평균_조회(Ticker, timeframe=MA_TIMEFRAME)
     title_symbol = Ticker.split('/')[0]
 
     buffer_multiplier = 1.0 - (TREND_EXIT_BUFFER_PCT / 100.0)
 
     if not state["is_riding"]:
-        # 진입: 4시간봉 5MA 상승 + 현재가가 4시간봉 5MA 지지선 이상
-        if rising_4h and ma_4h_today > 0 and 현재가 >= ma_4h_today:
+        # 진입: 1시간봉 5MA 상승 + 현재가가 1시간봉 5MA 지지선 이상
+        if rising_1h and ma_1h_today > 0 and 현재가 >= ma_1h_today:
             state["is_riding"] = True
             state["entered_at"] = now
             추세라이딩_상태저장(Ticker, state)
-            이탈기준_4h = ma_4h_today * buffer_multiplier
+            이탈기준_1h = ma_1h_today * buffer_multiplier
             msg = (
                 f"🚀 *[{title_symbol}_추세 라이딩 진입]*\n"
                 f"━━━━━━━━━━━━━━━\n"
                 f"📊 *종목*: `{Ticker}`\n"
-                f"📈 *4시간 5MA*: 상승 전환 (`{ma_4h_today:.4f} > {ma_4h_prev:.4f}`)\n"
+                f"📈 *1시간 5MA*: 상승 전환 (`{ma_1h_today:.4f} > {ma_1h_prev:.4f}`)\n"
                 f"📌 *현재가*: `{현재가:.4f} USDT`\n"
-                f"🛡️ *종료 조건*: 4시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% 이탈 시 (`{이탈기준_4h:.4f} USDT` 하회)\n"
+                f"🛡️ *종료 조건*: 1시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% 이탈 시 (`{이탈기준_1h:.4f} USDT` 하회)\n"
                 f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
                 f"━━━━━━━━━━━━━━━"
             )
             telegram_alert.SendMessage(msg)
             print(
-                f"🚀 [{title_symbol}] 4시간봉 5MA 상승 & 안착 -> 상태 2 [추세 라이딩] 진입 "
-                f"(종료조건: 4시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% 이탈, 기준선 {이탈기준_4h:.4f})",
+                f"🚀 [{title_symbol}] 1시간봉 5MA 상승 & 안착 -> 상태 2 [추세 라이딩] 진입 "
+                f"(종료조건: 1시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% 이탈, 기준선 {이탈기준_1h:.4f})",
                 flush=True
             )
             return True, False
         return False, False
     else:
         # 이미 상태 2(라이딩) 중인 경우
-        if ma_4h_today <= 0:
+        if ma_1h_today <= 0:
             return True, False
 
-        # 검증: 4시간봉 5MA 지지선 이탈 (-0.5%) 확인
-        이탈기준_4h = ma_4h_today * buffer_multiplier
-        if 현재가 < 이탈기준_4h:
+        # 검증: 1시간봉 5MA 지지선 이탈 (-0.5%) 확인
+        이탈기준_1h = ma_1h_today * buffer_multiplier
+        if 현재가 < 이탈기준_1h:
             state["is_riding"] = False
             state["entered_at"] = 0.0
             추세라이딩_상태저장(Ticker, state)
@@ -3482,9 +3492,9 @@ def 추세라이딩_상태체크(Ticker: str, 현재가: float) -> Tuple[bool, b
                 f"🛑 *[{title_symbol}_추세 라이딩 종료]*\n"
                 f"━━━━━━━━━━━━━━━\n"
                 f"📊 *종목*: `{Ticker}`\n"
-                f"📉 *4시간 5MA*: 이탈 (`{현재가:.4f} < {이탈기준_4h:.4f}`, 5MA `{ma_4h_today:.4f}`)\n"
+                f"📉 *1시간 5MA*: 이탈 (`{현재가:.4f} < {이탈기준_1h:.4f}`, 5MA `{ma_1h_today:.4f}`)\n"
                 f"📌 *현재가*: `{현재가:.4f} USDT`\n"
-                f"🛡️ *종료 조건*: 4시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% 이탈 충족\n"
+                f"🛡️ *종료 조건*: 1시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% 이탈 충족\n"
                 f"{사이클_라인}"
                 f"🔄 *후속 조치*: {_exit_action_desc}\n"
                 f"🕒 *시간*: `{지금().strftime('%Y-%m-%d %H:%M:%S')}`\n"
@@ -3495,8 +3505,8 @@ def 추세라이딩_상태체크(Ticker: str, 현재가: float) -> Tuple[bool, b
             except Exception as e:
                 print(f"[추세 라이딩 종료 알림 오류] {e}")
             print(
-                f"📉 [{title_symbol}] 4시간봉 5MA 지지선(-{TREND_EXIT_BUFFER_PCT}%) 이탈 감지 "
-                f"(현재가 {현재가:.4f} < 4시간기준 {이탈기준_4h:.4f}) -> 추세 라이딩 종료",
+                f"📉 [{title_symbol}] 1시간봉 5MA 지지선(-{TREND_EXIT_BUFFER_PCT}%) 이탈 감지 "
+                f"(현재가 {현재가:.4f} < 1시간기준 {이탈기준_1h:.4f}) -> 추세 라이딩 종료",
                 flush=True
             )
             return False, True
@@ -3944,7 +3954,7 @@ def 매도실행(Ticker: str, 현재가: float, riding_mode: str = None, exit_ri
             기존고점 = 0.0
 
         # 경계 틱 안전장치: 라이딩 중 +0.7%(TRAIL_STAGE1_PCT) 이상 도달했던 차수가
-        # 4시간봉 5MA 이탈(exit_riding=True)과 동시에 +0.7% 이하로 내려앉은 경우,
+        # 1시간봉 5MA 이탈(exit_riding=True)과 동시에 +0.7% 이하로 내려앉은 경우,
         # 고점 초기화로 인해 보존 매도가 누락되지 않도록 기존 고점을 유지하고 즉시 보존 매도 트리거
         경계틱_보존매도 = (
             exit_riding
@@ -4924,7 +4934,7 @@ def main_loop():
             "TRAILING" : f"종료 시점 기준 2단계 트레일링 (+{TRAIL_STAGE1_PCT}% 보존 / +{TRAIL_STAGE2_PCT}% 고점-{TRAIL_DISTANCE_PCT}%)",
             "IMMEDIATE": f"종료 시점 +{TRAIL_STAGE1_PCT}% 이상 즉시 익절",
         }.get(TREND_RIDING_EXIT_SELL_MODE, TREND_RIDING_EXIT_SELL_MODE)
-        print(f"   - 3-State 엔진: 활성화 (4시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% 지지선 이탈 필터)")
+        print(f"   - 3-State 엔진: 활성화 (1시간봉 5MA -{TREND_EXIT_BUFFER_PCT}% 지지선 이탈 필터)")
         print(f"   - 라이딩 중 매도: [{TREND_RIDING_SELL_MODE}] {_sell_mode_label}")
         print(f"   - 라이딩 종료 시 매도: [{TREND_RIDING_EXIT_SELL_MODE}] {_exit_sell_label}")
     else:
@@ -4958,7 +4968,7 @@ def main_loop():
             "IMMEDIATE": f"종료 시점 +{TRAIL_STAGE1_PCT}% 이상 즉시 익절",
         }.get(TREND_RIDING_EXIT_SELL_MODE, TREND_RIDING_EXIT_SELL_MODE)
         trend_line = (
-            f"🚀 3-State 엔진: `4시간봉 5MA 추세 라이딩` (이탈: -{TREND_EXIT_BUFFER_PCT}% 하회)\n"
+            f"🚀 3-State 엔진: `1시간봉 5MA 추세 라이딩` (이탈: -{TREND_EXIT_BUFFER_PCT}% 하회)\n"
             f"🔄 라이딩 중 매도: `[{TREND_RIDING_SELL_MODE}] {_sell_mode_desc}`\n"
             f"🏁 라이딩 종료 매도: `[{TREND_RIDING_EXIT_SELL_MODE}] {_exit_sell_desc}`\n"
             if TREND_RIDING_ENABLE else "🚀 3-State 엔진: `비활성`\n"
