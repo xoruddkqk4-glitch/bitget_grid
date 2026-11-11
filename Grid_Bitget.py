@@ -582,22 +582,22 @@ THREE_YIN_CANDLE_CONDITION_TYPE = "AND"
 # - 매수금액: 차수별 USDT 투입액
 # - 차수가 깊어질수록 간격/금액을 키워 평균단가를 빠르게 낮추는 전략
 GRID_TEMPLATE: Dict[int, Dict[str, Any]] = {
-    1: {"매수간격": 0.0, "매도간격": 0.7, "매수금액": 50},
-    2: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 50},
-    3: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 50},
-    4: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 50},
-    5: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 50},
-    6: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 50},
-    7: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 50},
-    8: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 50},
-    9: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 50},
-    10: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 50},
-    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 50} for i in range(11, 26)},
-    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 50} for i in range(26, 46)},
-    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 50} for i in range(46, 71)},
-    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 50} for i in range(71, 91)},
-    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 50} for i in range(91, 101)},
-    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 50} for i in range(101, 151)},
+    1: {"매수간격": 0.0, "매도간격": 0.7, "매수금액": 100},
+    2: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 100},
+    3: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 100},
+    4: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 100},
+    5: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 100},
+    6: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 100},
+    7: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 100},
+    8: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 100},
+    9: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 100},
+    10: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 100},
+    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 100} for i in range(11, 26)},
+    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 100} for i in range(26, 46)},
+    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 100} for i in range(46, 71)},
+    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 100} for i in range(71, 91)},
+    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 100} for i in range(91, 101)},
+    **{i: {"매수간격": -0.7, "매도간격": 0.7, "매수금액": 100} for i in range(101, 151)},
 }
 
 # 📌 PER_SYMBOL_GRID
@@ -1453,7 +1453,7 @@ def _대시보드용_공백예약_확장(Ticker: str, g_state: Dict[str, Any]) -
         top_ceil = int(sync_g.get("top_ceiling", 0) or 0)
         rem_cnt = int(sync_g.get("remaining_count", len(raw_orders)) or len(raw_orders))
         first_px = float(first_ord.get("target_price", 0.0) or 0.0)
-        amt_usdt = float(first_ord.get("amount_usdt", 50.0) or 50.0)
+        amt_usdt = float(first_ord.get("amount_usdt", 100.0) or 100.0)
         created_at = str(first_ord.get("created_at", "") or "")
         grid_cfg = trade_config.get(Ticker, {}).get("grid_config", {})
         interval_pct = abs(float(grid_cfg.get(2, {}).get("매수간격", 0.7)))
@@ -1842,7 +1842,7 @@ def 쿨링공백복원_실행(
     K_plan = min(K_new + prev_rem_count, MAX_GAP_CUT_LEVELS)
 
     # 4. 자금 충분 조건 및 손절 여부 판정 (GAP_CUT_MODE)
-    default_amount = float(trade_config[Ticker]["grid_config"].get(1, {}).get("매수금액", 143.0))
+    default_amount = float(trade_config[Ticker]["grid_config"].get(1, {}).get("매수금액", 100.0))
     needed_funds = default_amount * K_plan * GAP_CUT_FUNDS_BUFFER_RATIO
     free_usdt = 거래소_USDT_잔고조회()
 
@@ -2304,7 +2304,7 @@ def 비상_증거금확보_쿨링공백복원_실행(
     )])
 
     # 9. 바닥 실제체결가(P_real_fill) 기준 동적 예약 목표가 산출 (+0.7%)
-    default_amount = float(trade_config[Ticker]["grid_config"].get(1, {}).get("매수금액", 143.0))
+    default_amount = float(trade_config[Ticker]["grid_config"].get(1, {}).get("매수금액", 100.0))
     first_target = round(실제체결가 * (1.0 + interval_pct / 100.0), 6)
     safety_ceiling = effective_P_prev * (1.0 - interval_pct / 100.0) if effective_P_prev > 0 else 0.0
 
