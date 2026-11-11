@@ -877,3 +877,13 @@
   - `python -m py_compile Grid_Bitget.py` 로컬 및 EC2 원격 정적 구문 검증 완료 (`REMOTE_COMPILE_OK`, 오류 0건)
   - EC2 실서버(`ec2:/var/autobot/bitget_grid/Grid_Bitget.py`) 자동 배포 및 프로세스 안전 재기동(`pkill -15`) 완료
   - 텔레그램 종료(`⏹️ [비트겟 그리드봇 종료]`)/시작(`🚀 [비트겟 그리드봇 시작]`) 안내 메시지 발송 및 실시간 폴링/상태 동기화 정상 가동 확인
+
+## [2026-11-11 09:44] 업데이트 이력 (Commit ID: 767016b)
+- **수정 내용**:
+  - **전 차수(1차 ~ 150차) 매수 금액을 동일하게 50 USDT ➔ 100 USDT로 상향 조정 ([`Grid_Bitget.py`](file:///c:/Users/user/Desktop/trading_buddy/06비트겟자동매매-4기/week_01-bitget_grid/Grid_Bitget.py))**:
+    - `GRID_TEMPLATE` (`Grid_Bitget.py:L584-L601`)의 1차~150차 전 구간 `"매수금액"`을 기존 `50`에서 `100` (100 USDT)으로 일괄 변경
+    - 쿨링 공백 복원 및 구글 시트 예약 상태 동기화 시 참조하는 기본 매수금액 fallback 값(`Grid_Bitget.py:L1456`, `L1845`, `L2307`)도 `100.0`으로 일괄 동기화
+- **검증 결과**:
+  - `python -m py_compile Grid_Bitget.py` 로컬 및 EC2 원격 정적 구문 검증 완료 (`REMOTE_COMPILE_OK`, 오류 0건)
+  - EC2 실서버(`ec2:/var/autobot/bitget_grid/Grid_Bitget.py`) 자동 배포 및 프로세스 안전 재기동(`pkill -15`) 완료
+  - 텔레그램 종료(`⏹️ [비트겟 그리드봇 종료]`)/시작(`🚀 [비트겟 그리드봇 시작]`) 안내 메시지 발송 및 실시간 폴링 프로세스 정상 가동 확인
